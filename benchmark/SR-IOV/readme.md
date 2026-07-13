@@ -75,6 +75,8 @@ Step 3: Enable Virtual Functions
 ( from dmesg  :
 
 ---
+**`dmesg`** :
+```bash
 $ dmesg
 [ 2090.926758] mlx5_core 0000:01:00.1: E-Switch: Enable: mode(LEGACY), nvfs(1), necvfs(0), active vports(2)
 [ 2091.034231] pci 0000:01:01.2: [15b3:1018] type 7f class 0xffffff conventional PCI
@@ -112,6 +114,7 @@ $ lspci -t
            +-18.6
            \-18.7
 
+```
 ---
 NOTE: With limitation Unable to test 
 
