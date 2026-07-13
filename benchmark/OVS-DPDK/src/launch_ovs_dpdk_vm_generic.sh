@@ -1,0 +1,119 @@
+#!/bin/bash
+set -euo pipefail
+
+# ============================================================================
+# launch_ovs_dpdk_vm_generic.sh
+#
+# One script, reused for both VM1 and VM2 - just called with different args.
+# Each VM has TWO virtio-net devices:
+#   - a vhost-user NIC (the actual test datapath, connects to OVS-DPDK)
+#   - a plain tap/vhost-net mgmt NIC (SSH/control only, NOT measured -
+#     same reasoning as the SR-IOV leg's mgmt bridge)
+#
+# Usage: ./launch_ovs_dpdk_vm_generic.sh <vm_name> <vhost_socket> <vhost_mac> \
+#                                        <mgmt_tap> <mgmt_mac> <vcpu_pin_csv>
+#   e.g. VM1: ./launch_ovs_dpdk_vm_generic.sh vm1 \
+#              /tmp/ovs-vhost/vhost-user0 52:54:00:aa:bb:01 \
+#              tap-mgmt1 52:54:00:mm:mm:01 4,5
+#        VM2: ./launch_ovs_dpdk_vm_generic.sh vm2 \
+#              /tmp/ovs-vhost/vhost-user1 52:54:00:aa:bb:02 \
+#              tap-mgmt2 52:54:00:mm:mm:02 6,7
+# (cores 2,3 reserved for PMD threads per host_ovs_dpdk_dualport_setup.sh -
+#  keep vCPU pins for BOTH VMs disjoint from those AND from each other)
+# ============================================================================
+
+VM_NAME="${1:?Usage: $0 <vm_name> <vhost_socket> <vhost_mac> <mgmt_tap> <mgmt_mac> <vcpu_pin_csv>}"
+VHOST_SOCKET="${2:?missing vhost_socket path}"
+VHOST_MAC="${3:?missing vhost_mac}"
+MGMT_TAP="${4:?missing mgmt_tap}"
+MGMT_MAC="${5:?missing mgmt_mac}"
+VCPU_PIN_CSV="${6:?missing vcpu_pin_csv, e.g. 4,5}"
+IFS=',' read -ra VCPU_PIN <<< "${VCPU_PIN_CSV}"
+
+VCPUS=${#VCPU_PIN[@]}
+MEM=2G
+DISK="$(realpath ./${VM_NAME}.qcow2)"
+SEED="$(realpath ./${VM_NAME}-seed.iso)"
+MONITOR_SOCK=/tmp/qemu-monitor-${VM_NAME}.sock
+SERIAL_LOG=/tmp/qemu-${VM_NAME}-serial.log
+
+### ---- Pre-flight ----
+[[ -f "${DISK}" ]] || { echo "ERROR: ${DISK} not found - build with build_sriov_vm_image.sh (reused as-is - it's generic mgmt+dataplane, doesn't care if dataplane is a VF or vhost-user)"; exit 1; }
+[[ -f "${SEED}" ]] || { echo "ERROR: ${SEED} not found"; exit 1; }
+ip link show ${MGMT_TAP} &>/dev/null || { echo "ERROR: ${MGMT_TAP} missing - run host_ovs_dpdk_dualport_setup.sh first"; exit 1; }
+
+# Hugepage check - PAGE-SIZE AWARE. Earlier versions of this script assumed
+# 2MB pages and hardcoded "need >=1024 free pages" (1024 x 2MB = 2GB). This
+# host now uses 1GB pages instead (Hugepagesize: 1048576 kB in
+# /proc/meminfo) - with 1GB pages there are only ~12 total, so a hardcoded
+# ">=1024" check would ALWAYS fail even with plenty of free memory. Compute
+# the actual requirement from whatever page size is really mounted, so this
+# works correctly regardless of which hugepage size the host is configured
+# for (2MB or 1GB - some DPDK deployments deliberately use 1GB pages for
+# fewer TLB misses on the datapath, which is likely why this host was
+# reconfigured that way).
+HUGEPAGE_SIZE_KB=$(grep Hugepagesize /proc/meminfo | awk '{print $2}')   # e.g. 1048576 (1GB) or 2048 (2MB)
+HUGEPAGE_SIZE_BYTES=$((HUGEPAGE_SIZE_KB * 1024))
+MEM_BYTES=$(( $(numfmt --from=iec "${MEM}") ))                            # "2G" -> bytes
+NEEDED_PAGES=$(( (MEM_BYTES + HUGEPAGE_SIZE_BYTES - 1) / HUGEPAGE_SIZE_BYTES ))  # round up
+
+FREE_HP=$(grep HugePages_Free /proc/meminfo | awk '{print $2}')
+echo "Hugepage size: $((HUGEPAGE_SIZE_KB / 1024)) MB | Free: ${FREE_HP} | Needed for this VM (${MEM}): ${NEEDED_PAGES}"
+[[ "${FREE_HP}" -ge "${NEEDED_PAGES}" ]] || { echo "ERROR: only ${FREE_HP} free hugepages, need >=${NEEDED_PAGES} for this VM's ${MEM}"; exit 1; }
+
+# Sanity check: confirm /dev/hugepages is actually mounted (a host can have
+# multiple hugetlbfs mounts for different page sizes, e.g. /dev/hugepages
+# for the default size and a separate /dev/hugepages1G - if -mem-path
+# below pointed at a mount backed by a DIFFERENT size than what we just
+# calculated against, QEMU would fail or silently use the wrong size).
+mount | grep -q "on /dev/hugepages type hugetlbfs" \
+    || { echo "ERROR: /dev/hugepages is not mounted as hugetlbfs"; exit 1; }
+
+pgrep -f "qemu-${VM_NAME}" >/dev/null && { echo "ERROR: qemu-${VM_NAME} already running"; exit 1; }
+rm -f "/tmp/qemu-${VM_NAME}.pid" "${MONITOR_SOCK}"
+
+### ---- Launch ----
+qemu-system-x86_64 \
+  -name guest,process=qemu-${VM_NAME} \
+  -enable-kvm -cpu host,host-cache-info=on -smp ${VCPUS},sockets=1,cores=${VCPUS},threads=1 \
+  -m ${MEM} \
+  -object memory-backend-file,id=mem,size=${MEM},mem-path=/dev/hugepages,share=on \
+  -numa node,memdev=mem \
+  -drive file=${DISK},if=virtio,format=qcow2,cache=none,aio=native \
+  -drive file=${SEED},if=virtio,format=raw,readonly=on \
+  -chardev socket,id=vhostchar,path=${VHOST_SOCKET},server=on \
+  -netdev vhost-user,id=vhostnet,chardev=vhostchar,queues=1 \
+  -device virtio-net-pci,netdev=vhostnet,mac=${VHOST_MAC},mq=on,vectors=4 \
+  -netdev tap,id=mgmtnet,ifname=${MGMT_TAP},script=no,downscript=no,vhost=on \
+  -device virtio-net-pci,netdev=mgmtnet,mac=${MGMT_MAC} \
+  -monitor unix:${MONITOR_SOCK},server,nowait \
+  -serial file:${SERIAL_LOG} \
+  -display none \
+  -daemonize \
+  -pidfile /tmp/qemu-${VM_NAME}.pid
+
+### ---- Confirm started ----
+sleep 2
+[[ -f "/tmp/qemu-${VM_NAME}.pid" ]] || { echo "ERROR: failed to start - check ${SERIAL_LOG}"; exit 1; }
+QEMU_PID=$(cat /tmp/qemu-${VM_NAME}.pid)
+kill -0 "${QEMU_PID}" 2>/dev/null || { echo "ERROR: pid ${QEMU_PID} not running - check ${SERIAL_LOG}"; exit 1; }
+
+### ---- Confirm OVS actually connected the vhost-user link ----
+sleep 3
+VHOST_PORT_NAME=$(basename "${VHOST_SOCKET}")
+LINK_STATE=$(sudo ovs-vsctl get Interface ${VHOST_PORT_NAME} link_state 2>/dev/null || echo "unknown")
+echo "${VHOST_PORT_NAME} link_state: ${LINK_STATE}"
+[[ "${LINK_STATE}" == "up" ]] || echo "WARNING: not up yet - check host_ovs_dpdk_dualport_setup.sh ran first, and OVS logs"
+
+### ---- Pin vCPU threads ----
+i=0
+for tid in $(ls /proc/${QEMU_PID}/task | tail -n +2); do
+    comm=$(cat /proc/${QEMU_PID}/task/${tid}/comm)
+    if [[ "$comm" == CPU* ]]; then
+        taskset -pc ${VCPU_PIN[$i]} ${tid}
+        i=$((i+1))
+    fi
+done
+
+echo "Launched ${VM_NAME}, PID ${QEMU_PID}, vhost-user via ${VHOST_SOCKET}, mgmt via ${MGMT_TAP}"
+echo "Serial log: ${SERIAL_LOG}"
