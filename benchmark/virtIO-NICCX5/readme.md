@@ -1,25 +1,35 @@
 # 01 virtio-NIC (CX5) 
 
-```mermaid
-flowchart TD
-    A["Guest VM (ens3)<br/>Static IP, iperf3 + qperf"]
-    B["vnet0 (tap)<br/>vhost-net kernel thread"]
-    C["br0 + port0<br/>Bridge, L2 only, no IP"]
-    D["port1 (host)<br/>Host IP, test client"]
+```mermaid 
+graph LR
+    %% Style definitions
+    classDef vm fill:#319795,stroke:#234e52,color:#ffffff;
+    classDef vnet fill:#2b6cb0,stroke:#1a365d,color:#ffffff;
+    classDef nic fill:#2d3748,stroke:#1a202c,color:#ffffff;
+    classDef host fill:#d69e2e,stroke:#744210,color:#ffffff;
 
-    A --> B
-    B --> C
-    C -->|"DAC loopback cable"| D
+    subgraph VM_Space ["Guest Virtual Machine"]
+        VM["[VM] <br> (192.168.100.10)"]:::vm
+    end
 
-    %% Styling
-    style A fill:#dff3ed,stroke:#6aa38b,stroke-width:1px,color:#000
-    style B fill:#ecebff,stroke:#8a88d8,stroke-width:1px,color:#000
-    style C fill:#ecebff,stroke:#8a88d8,stroke-width:1px,color:#000
-    style D fill:#fde9e4,stroke:#d08a73,stroke-width:1px,color:#000
+    subgraph Host_Virtual ["Host Virtual Network (L2)"]
+        TAP["[tap0] <br> (vnet0)"]:::vnet
+        BRIDGE["[bridge] <br> (br0)"]:::vnet
+    end
+
+    subgraph Physical_NIC ["ConnectX-5 Dual-Port NIC"]
+        Port0["[enp1s0f0np0] <br> (Port 0)"]:::nic
+        Port1["[enp1s0f1np1] <br> (Port 1 - 192.168.100.1)"]:::nic
+    end
+
+    %% Flow connections
+    VM <--> |VirtIO-Net| TAP
+    TAP <--> |Enslaved| BRIDGE
+    BRIDGE <--> |L2 Bridge Port| Port0
+    
+    %% The physical loopback wire
+    Port0 <===> |"Physical DAC Cable (Loopback)"| Port1
 ```
-
-
-
 ## 1. VM installation and how it connects to the host
 
 `01-build_guest_image.sh` pulls a Fedora containerdisk via podman, extracts the raw disk, bakes `iperf3`/`sysstat`/`qperf` in via `virt-customize`, layers a writable qcow2 overlay on top, and generates a cloud-init seed (static user `bench` with SSH key auth, static IP on `ens3`). `launch_virtio.sh` boots it with QEMU using `virtio-net-pci` + `vhost=on`, backed by a tap device (`vnet0`) plugged into a Linux bridge (`br0`) that also holds the physical CX-5 port0.
