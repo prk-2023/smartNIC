@@ -1,7 +1,35 @@
 # OVS-DPDK Dual-Port Physical Loopback Benchmark
 
-## Rest ovs settings, since ovsdb-server saves the configuration for ovs-vswitch server thats used to
-forward traffic. This setting can conflict with the test setup.
+
+
+```txt
+    +------------------------------------------------------------------------+
+    |                             FEDORA 43 HOST                             |
+    |                                                                        |
+    |    +--------------------------------------------------------------+    |
+    |    |                      BENCHMARK GUEST VM                      |    |
+    |    |                                                              |    |
+    |    |      [ VM1: (virtio-net]               [ VM2 (virtio-net]    |    |
+    |    +--------------|-------------------------------------|---------+    |
+    |                   | (vhost-user0)                       |(vhost-user1) |
+    |    +--------------|-------------------------------------|---------+    |
+    |    |           (br-left)                              (br-right)  |    |
+    |    |          OVS-DPDK Switch                      OVS-DPDK Switch|    |
+    |    +--------------|---------------------------------------|-------+    |
+    |                   |                                       |            |
+    |            [ enp1s0f0np0 ]                         [ enp1s0f1np1 ]     |
+    |             (dpdk0 port0)                           (dpdk1 port1)      |
+    +-------------------|---------------------------------------|------------+
+                        +========== Physical DAC Loopback ======+
+                            br-mgmt (local, SW only)
+                            ssh into both VMs not measured. 
+```
+
+
+## Rest ovs settings, 
+
+`ovsdb-server` saves the configuration for `ovs-vswitch` server, which is used to forward traffic. 
+The setting can conflict with the test setup.
 
 ./01-host_ovs_dpdk_dualport_reset.sh 
 
@@ -42,8 +70,9 @@ Wipes old/existing Open vSwitch configuration:
            │             │
           VM1           VM2
 ```
-- prepare the system to use Open vSwitch (OVS) with DPDK as a very fast sw-switch connecting two physical NIC
-ports of CX5 to two VM using `vhost-user`. 
+
+- prepare the system to use Open vSwitch (OVS) with DPDK as a very fast sw-switch connecting two physical
+  NIC ports of CX5 to two VM using `vhost-user`. 
 - Also create a separate sw only mgmt network. 
 - physicsl NICS :
     `PF0="enp1s0f0np0"`
