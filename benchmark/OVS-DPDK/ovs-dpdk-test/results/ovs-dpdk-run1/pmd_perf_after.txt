@@ -1,0 +1,48 @@
+
+Time: 08:48:25.771
+Measurement duration: 751.253 s
+
+pmd thread numa_id 0 core_id 2:
+
+  Iterations:           5912607122  (0.13 us/it)
+  - Used TSC cycles:  2180622872789  (100.0 % of total cycles)
+  - idle iterations:    5907500176  ( 98.6 % of used cycles)
+  - busy iterations:       5106946  (  1.4 % of used cycles)
+  - sleep iterations:            0  (  0.0 % of iterations)
+  Sleep time (us):               0  (  0 us/iteration avg.)
+  Rx packets:              5238452  (7 Kpps, 5851 cycles/pkt)
+  Datapath passes:         5238452  (1.00 passes/pkt)
+  - PHWOL hits:                  0  (  0.0 %)
+  - MFEX Opt hits:               0  (  0.0 %)
+  - Simple Match hits:           0  (  0.0 %)
+  - EMC hits:              5237075  (100.0 %)
+  - SMC hits:                    0  (  0.0 %)
+  - Megaflow hits:            1331  (  0.0 %, 1.01 subtbl lookups/hit)
+  - Upcalls:                    46  (  0.0 %, 0.0 us/upcall)
+  - Lost upcalls:                0  (  0.0 %)
+  Tx packets:              5238532  (7 Kpps)
+  Tx batches:              5229786  (1.00 pkts/batch)
+
+Time: 08:48:25.771
+Measurement duration: 751.253 s
+
+pmd thread numa_id 0 core_id 3:
+
+  Iterations:           4881367725  (0.15 us/it)
+  - Used TSC cycles:  2180491036870  ( 99.9 % of total cycles)
+  - idle iterations:    4858316830  ( 84.1 % of used cycles)
+  - busy iterations:      23050895  ( 15.9 % of used cycles)
+  - sleep iterations:            0  (  0.0 % of iterations)
+  Sleep time (us):               0  (  0 us/iteration avg.)
+  Rx packets:            228331319  (304 Kpps, 1521 cycles/pkt)
+  Datapath passes:       228331319  (1.00 passes/pkt)
+  - PHWOL hits:                  0  (  0.0 %)
+  - MFEX Opt hits:               0  (  0.0 %)
+  - Simple Match hits:           0  (  0.0 %)
+  - EMC hits:            228328751  (100.0 %)
+  - SMC hits:                    0  (  0.0 %)
+  - Megaflow hits:            2544  (  0.0 %, 1.00 subtbl lookups/hit)
+  - Upcalls:                    24  (  0.0 %, 0.0 us/upcall)
+  - Lost upcalls:                0  (  0.0 %)
+  Tx packets:            228331339  (304 Kpps)
+  Tx batches:             44701198  (5.11 pkts/batch)
