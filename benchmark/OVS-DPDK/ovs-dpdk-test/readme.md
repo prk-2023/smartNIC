@@ -28,10 +28,11 @@
 
 ## Rest ovs settings, 
 
-`ovsdb-server` saves the configuration for `ovs-vswitch` server, which is used to forward traffic. 
-The setting can conflict with the test setup.
+`ovsdb-server` saves the configuration for `ovs-vswitch` server, which are used to forward traffic. 
 
-./01-host_ovs_dpdk_dualport_reset.sh 
+The persist on system reboot and they can conflict with the benchmarking test setup.
+
+`./01-host_ovs_dpdk_dualport_reset.sh`
 
 Wipes old/existing Open vSwitch configuration:
 - force terminates if any VMs are running 
@@ -43,7 +44,9 @@ Wipes old/existing Open vSwitch configuration:
 
 --- 
 
-## one-time host setup - binds BOTH ports to DPDK, no vfio/IOMMU concerns 
+## one-time host setup - binds BOTH ports to DPDK
+
+Note: no vfio/IOMMU concerns to be configured  ( as with SR-IOV)
 
 ```txt 
                  Physical Network
@@ -184,7 +187,7 @@ rules to connect the bridges. ( This gives isolation and gives each VM a dedicat
   stack, reducing CPU overhead and latency, and increases throughput. ( primary performance benefits of
   OVS-DPDK )
   
-=>  **./02-host_ovs_dpdk_dualport_setup.sh**
+=>  **`./02-host_ovs_dpdk_dualport_setup.sh`**
 
 ## use cloud-init to generate VM images ( one time )
 
