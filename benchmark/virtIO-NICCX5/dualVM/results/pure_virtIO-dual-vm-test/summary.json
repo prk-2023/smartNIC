@@ -1,0 +1,9 @@
+{
+  "tcp_throughput_gbps": 21.71,
+  "udp_pps": 668921.0,
+  "udp_lost_percent": 0.605,
+  "tcp_latency": "23.3 us",
+  "udp_latency": "22.4 us",
+  "host_cpu_busy_pct": 37.44,
+  "note": "This is the pure-virtio (Linux bridge + vhost-net) run - no OVS/DPDK involved. host_cpu_busy_pct includes vhost-net kernel worker threads, which only consume CPU while actively forwarding packets (unlike DPDK PMD threads, which busy-poll at ~100% even when idle). Check vhost_threads_before/after.txt for kernel thread placement (psr column = host core) and ethtool_*_before/after.txt to confirm rx/tx_packets climbed on the physical NICs during the run."
+}

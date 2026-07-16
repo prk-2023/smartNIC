@@ -1,0 +1,2 @@
+     rx_packets: 4907534
+     tx_packets: 305730746
