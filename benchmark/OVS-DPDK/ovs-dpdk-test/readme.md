@@ -1,6 +1,13 @@
 # OVS-DPDK Dual-Port Physical Loopback Benchmark
 
+## kernel boot args:
+$ cat /proc/cmdline
+BOOT_IMAGE=(hd0,gpt2)/vmlinuz-6.18.16-200.fc43.x86_64 root=UUID=01f43f27-c2e8-4447-9f38-caa81e00c428 ro rhgb quiet intel_iommu=on iommu=pt pci=realloc,assign-busses pcie_acs_override=downstream,multifunction default_hugepagesz=1G hugepagesz=1G hugepages=12 isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7 selinux=0 
 
+For Reference the default boot args as below:
+BOOT_IMAGE=(hd0,gpt2)/vmlinuz-6.18.16-200.fc43.x86_64 root=UUID=01f43f27-c2e8-4447-9f38-caa81e00c428 ro rhgb quiet selinux=0 
+
+**Setup:**
 
 ```txt
     +------------------------------------------------------------------------+
