@@ -33,8 +33,8 @@ Host System:
 | Host CPU Busy   |     **37.44%** |          44.08% | *Not directly comparable* measured differently     |
 
 Benchmark workload between **VM1** and **VM2**. 
-Difference between them is the forwarding path 
-(Linux bridge + VirtIO/vhost-net versus OVS-DPDK). 
+
+Difference between them is the forwarding path (Linux bridge + VirtIO/vhost-net versus OVS-DPDK). 
 
 Traffic-generation commands and measured metrics  are identical:
 
@@ -182,6 +182,45 @@ Cause:
 
 ---
 
+## Compare test results with cpu governor = performance
+
+compare between powersave and performance governer:
+
+$ echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+
+Case 1: Pure virtIO:
+
+| Metric          |       Powersave | Performance |                Change |
+| --------------- | --------------: | ----------: | --------------------: |
+| TCP Throughput  |  **21.62 Gbps** |  21.36 Gbps |                 −1.2% |
+| UDP Packet Rate | **661,029 pps** | 651,038 pps |                 −1.5% |
+| UDP Packet Loss |      **0.682%** |      0.806% |        Slightly worse |
+| TCP Latency     |     **23.9 µs** |     24.8 µs |               +0.9 µs |
+| UDP Latency     |     **22.0 µs** |     22.1 µs | Essentially unchanged |
+| Host CPU Busy   |          37.61% |      37.46% |  No meaningful change |
+
+Changing the CPU frequency governor from powersave to performance had negligible impact on the Pure VirtIO
+datapath. Across all measured metrics—including TCP throughput, UDP packet rate, packet loss, latency, and
+host CPU utilization—the observed differences were within normal benchmark variation.
+
+Case 2: ovs-dpdk:
+
+| Metric          |   Powersave |     Performance |                        Change |
+| --------------- | ----------: | --------------: | ----------------------------: |
+| TCP Throughput  |  13.27 Gbps |      13.04 Gbps | −1.7% (no significant change) |
+| UDP Packet Rate | 501,083 pps | **752,894 pps** |                    **+50.3%** |
+| UDP Packet Loss |  **0.148%** |          3.011% |                     Increased |
+| TCP Latency     |     16.8 µs |     **16.3 µs** |                         −3.0% |
+| UDP Latency     | **15.4 µs** |         15.6 µs |         No significant change |
+| Host CPU Busy   |      43.80% |          43.56% |         No significant change |
+
+Switching from the powersave governor to the performance governor has little effect on bulk TCP throughput 
+or CPU utilization, but has a increased packet-processing capacity of OVS-DPDK. 
+The higher CPU frequency enables PMD threads to forward approximately 50% more UDP packets per second, 
+=> improved packet-processing capability.
+
+
+--- 
 | VirtIO Performance  | Native VirtIO | OVS + DPDK   | CX5 vDPA |
 | :--- | :--- | :--- | :--- |
 | Small Pkt Fwd Efficiency (Mpps)  |  |  | |

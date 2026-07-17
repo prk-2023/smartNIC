@@ -30,4 +30,5 @@ echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governo
 Permanent setting:
 sudo dnf install kernel-tools ; edit /etc/default/cpupower : GOVERNOR="performance"
 
-
+or 
+echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
