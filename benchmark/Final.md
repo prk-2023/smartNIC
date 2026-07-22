@@ -1,14 +1,196 @@
 Benchmark Results :
 
 - Measure 3 different usecase to compare the throughput of virtual machines using
-  - Pure VirtIO, ( With PF0 and PF1, and with PF0:VF0, PF1:VF0 ) 
+
+  - Pure VirtIO, ( With PF0 and PF1, and with PF0:VF0, PF1:VF0 (Requires SR-IOV or 2 systems)) 
+
   - OVS-DPDK 
+
   - vDPA 
 
 Note: 
 - SR-IOV: ARI/PCIe bus limitation: explained at the bottom of the document.
 
-- **vDPA**: both the Linux kernel's `mlx5_vdpa` driver and DPDK's `vdpa/mlx5`  PMD, requires the NIC to
+- **vDPA**: 
+    - kernel source: `drivers/vdpa/mlx5/`, compiled into the kernel tree, 
+
+    - vDPA requires explicit HW engine support in the ASIC to parse and process VirtIO rings natively. 
+
+    - kernel module `mlx5_vdpa`: Mellanox VDPA driver, common module for all NVIDIA/Mellanox
+      devices using `mlx5` core. 
+
+    - Driver queries firmware capabilities (`virtio_net_cap`) during initialization. 
+
+    - `mlx5_vdpa` driver operates on **VFs** and not with the physical function. 
+
+    ```
+    $ lspci -t
+    -[0000:00]-+-00.0
+           +-01.0-[01]--+-00.0
+           |            \-00.1
+           +-02.0
+           +-08.0
+           .....
+    // PCI device occupies bus 01: maps to PCI address 0000:01:00.0  => PF0 
+    // PCI device occupies bus 01: maps to PCI address 0000:01:00.1  => PF1 
+    ```
+    - Enable SR-IOV and create 1 VF (VF)
+
+    ```
+    # check kernel boot args support hugepages and 
+    # enable 1 VF on PCI device 0000:01:00.0 
+    echo 1 | sudo tee /sys/bus/pci/devices/0000:01:00.0/sriov_numvfs
+
+    # check the created VF address ( it should spawn as 0000:01:00.x )
+    lspci -s 01:
+    01:00.0 Ethernet controller: Mellanox Technologies MT27800 Family [ConnectX-5]
+    01:00.1 Ethernet controller: Mellanox Technologies MT27800 Family [ConnectX-5]
+    01:00.2 Ethernet controller: Mellanox Technologies MT27800 Family [ConnectX-5 Virtual Function]
+    ```
+
+    - Set the Switchdev Mode: VDPA on mlx5 device requires card's eSwitch to be in `Switchdev` mode
+      rather  than std `legacy` mode. 
+
+    ```bash
+    # 1. Unbind the new VF from mlx5_core so the eSwitch mode can be changed 
+    echo "0000:01:00.2" | sudo tee /sys/bus/pci/drivers/mlx5_core/unbind
+
+    # 2. Change the eSwitch mode to switchdev on the main PF
+    sudo devlink dev eswitch set pci/0000:01:00.0 mode switchdev
+
+    ```
+    -  Load the vDPA Driver & Attempt Probe/Bind
+    1. Clear dmesg ring buffer and load the mlx5_vdpa driver module:
+    ```bash 
+    sudo dmesg -c > /dev/null 
+    sudo modprobe mlx5_vdpa
+    ```
+    2. Attempt to bind new VF ( `0000:01:00.2` ) directly to `mlx5_vdpa` driver 
+    ```bash 
+    echo "0000:01:00.2" | sudo tee /sys/bus/pci/drivers/mlx5_vdpa/bind 
+    ```
+    3. get nothing after modprobe:
+    ```bash 
+    lsmod | grep -E 'mlx5|vdpa'
+    lsmod |grep -E 'vdpa|mlx'
+        mlx5_vdpa             114688  0
+        vringh                 36864  1 mlx5_vdpa
+        vhost_iotlb            16384  2 vringh,mlx5_vdpa
+        vdpa                   40960  1 mlx5_vdpa`mlx5_ib               606208  2
+        ib_uverbs             217088  9 rdma_ucm,mlx5_ib 
+        macsec                 73728  1 mlx5_ib 
+        _core               585728  14 rdma_cm,ib_ipoib,rpcrdma,ib_srpt,iw_cm,ib_iser,ib_umad,ib_isert,rdma_ucm,ib_uverbs,mlx5_ib,ib_cm
+        mlx5_fwctl             16384  0 
+        fwctl                  20480  1 mlx5_fwctl 
+        mlx5_core            3514368  3 mlx5_fwctl,mlx5_vdpa,mlx5_ib 
+        xfw                  49152  1 mlx5_core 
+        psample                20480  2 openvswitch,mlx5_core 
+        tls                   167936  1 mlx5_core
+    ```
+
+    No HW probing is done or 
+    4. Check kernel log:
+    ```bash 
+    $sudo dmesg | grep -E -i "mlx5|vdpa|virtio"
+    ```
+
+    No output?
+
+
+    - Unbind the VF from mlx5_core:  
+    By default, the kernel auto-attaches new VFs to mlx5_core.
+    ```bash 
+    # echo "0000:01:00.2" | sudo tee /sys/bus/pci/drivers/mlx5_core/unbind
+    tee: /sys/bus/pci/drivers/mlx5_core/unbind: No such devices 
+    # echo "0000:01:00.2" | sudo tee /sys/bus/pci/drivers/mlx5_vdpa/bind
+    tee: /sys/bus/pci/drivers/mlx5_vdpa/bind: No such file or directory
+    0000:01:00.2
+
+
+    ```
+
+    - switch eSwitch mode to `switchdev` ( vDPA requires `switchdev` mode )
+    ```bash 
+    sudo devlink dev eswitch set pci/0000:01:00.0 mode switchdev
+    ```
+
+    - Force-Bind the VF to `mlx5_vdpa`
+    this should force mlx5_vdpa_dev_add probe function in kernel, which checks for `virtio_net_cap` 
+
+    ```bash 
+    echo "0000:01:00.2" | sudo tee /sys/bus/pci/drivers/mlx5_vdpa/bind 
+    ```
+
+    - check dmesg:
+    ```bash 
+    dmesg | grep -E -i "mlx5|vdpa"
+    [13032.368713] mlx5_core 0000:01:00.0: E-Switch: Disable: mode(LEGACY), nvfs(1), necvfs(0), active vports(2)
+    [13034.050469] mlx5_core 0000:01:00.0: E-Switch: Supported tc chains and prios offload
+    [13034.351193] mlx5_core 0000:01:00.0 enp1s0f0np0: Link up
+    [13034.352370] mlx5_core 0000:01:00.0 enp1s0f0np0: Dropping C-tag vlan stripping offload due to S-tag vlan
+    [13034.352372] mlx5_core 0000:01:00.0 enp1s0f0np0: Disabling HW_VLAN CTAG FILTERING, not supported in switchdev mode
+    [13034.352374] mlx5_core 0000:01:00.0 enp1s0f0np0: Disabling HW MACsec offload, not supported in switchdev mode
+    [13034.357902] ib_srpt MAD registration failed for mlx5_0-1.
+    [13034.358510] ib_srpt srpt_add_one(mlx5_0) failed.
+    [13034.421139] mlx5_core 0000:01:00.0: E-Switch: Enable: mode(OFFLOADS), nvfs(1), necvfs(0), active vports(1)
+    [13034.423215] mlx5_core 0000:01:00.0 enp1s0f0r0: renamed from eth0
+    [13034.443252] mlx5_core 0000:01:00.0 rdmap1s0f0: Port: 2 Link ACTIVE
+    ```
+    => mode(OFFLOADS): eSwitch successfully entered switchdev / TC offload mode.
+    => active vports(1): The host enumerated the eSwitch VF representor interface (enp1s0f0r0).
+    => No vdpa or virtio event spawned: When mlx5_core probed the hw cap's of 0000:01:00.0 during the mode 
+       change, `mlx5_vdpa` did not claim or start a vDPA management device (vdpa mgmtdev).
+
+    - `# vdpa mgmtdev show` ( no o/p)
+
+    => Enable kernel vdpa driver with cx5 does not detect compatible HW mgmet device 
+
+=> https://doc.dpdk.org/guides-24.07/vdpadevs/mlx5.html#:~:text=See%20NVIDIA%20MLX5%20Common%20Driver%20guide%20for,with%20vDPA%20PMD.%20%2D%205.1.%20Supported%20NICs.
+
+    - For Software Testing/Simulation: Load the built-in kernel loopback block or network simulators:
+    Ref: https://stefano-garzarella.github.io/posts/2024-02-12-vdpa-blk/ 
+    ```bash 
+    sudo modprobe vdpa-sim-net   # For networking
+    sudo modprobe vdpa-sim-blk   # For storage
+    ```
+
+    - Instantiate and Manage the Device :
+    `vdpa` mgmt tool (available in the iproute2 package) to orchestrate your new vDPA devices:
+    ```bash 
+    #1 list available mgmt devices
+    vdpa mgmtdev show
+    vdpasim_net:
+        supported_classes net
+        max_supported_vqs 3
+        dev_features MTU MAC STATUS CTRL_VQ CTRL_MAC_ADDR ANY_LAYOUT VERSION_1 ACCESS_PLATFORM
+    ```
+    - Add new vDPA instance:(Ex maps a simulator backend named `vdpasim_net` to sys interface named vdpa0):
+    ```bash 
+    $sudo vdpa dev add name vdpa0 mgmtdev vdpasim_net
+    
+    #verify the device status:
+    $ sudo vdpa dev show vdpa0
+    vdpa0: type network mgmtdev vdpasim_net vendor_id 0 max_vqs 3 max_vq_size 256
+
+    #check dmesg:
+    $ sudo dmesg
+    [13032.368713] mlx5_core 0000:01:00.0: E-Switch: Disable: mode(LEGACY), nvfs(1), necvfs(0), active vports(2)
+    [13034.050469] mlx5_core 0000:01:00.0: E-Switch: Supported tc chains and prios offload
+    [13034.351193] mlx5_core 0000:01:00.0 enp1s0f0np0: Link up
+    [13034.352370] mlx5_core 0000:01:00.0 enp1s0f0np0: Dropping C-tag vlan stripping offload due to S-tag vlan
+    [13034.352372] mlx5_core 0000:01:00.0 enp1s0f0np0: Disabling HW_VLAN CTAG FILTERING, not supported in switchdev mode
+    [13034.352374] mlx5_core 0000:01:00.0 enp1s0f0np0: Disabling HW MACsec offload, not supported in switchdev mode
+    [13034.357902] ib_srpt MAD registration failed for mlx5_0-1.
+    [13034.358510] ib_srpt srpt_add_one(mlx5_0) failed.
+    [13034.421139] mlx5_core 0000:01:00.0: E-Switch: Enable: mode(OFFLOADS), nvfs(1), necvfs(0), active vports(1)
+    [13034.423215] mlx5_core 0000:01:00.0 enp1s0f0r0: renamed from eth0
+    [13034.443252] mlx5_core 0000:01:00.0 rdmap1s0f0: Port: 2 Link ACTIVE
+
+    ```
+    -  This isolation lets you benchmark the exact overhead of the Linux kernel's vDPA framework layer
+       itself, completely decoupled from network interface hardware.
+
+    - claud: both the Linux kernel's `mlx5_vdpa` driver and DPDK's `vdpa/mlx5`  PMD, requires the NIC to
   implement virtio ring/virtqueue processing directly in hardware (NVIDIA's "ASAP" hardware virtio
   emulation). That capability was introduced starting with the ConnectX-6 / ConnectX-6 Dx generation.
 
