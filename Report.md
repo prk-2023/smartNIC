@@ -13,12 +13,17 @@
 Evaluate virtualization network architecture on Mellanox CX-5 NIC adapter. 
 Performance ( throughput /CPU usage) metrics between Pure VirtIO, SR-IOV, OVS-DPDK, vDPA. 
 
-Pure VirtIO : buld TCP throughput and CPU efficiency.
-SR-IOV: Near native HW Performancem by-passing Host software bridge. 
-OVS-DPDK: Low latency and low packet drop rate ( as its by-passing OS network stack )
-vDPA : vhost data path acceleration: CX-5 limitation. (using Linux generic vDPA, CX-5 unable to bind )
+**Pure VirtIO** : buld TCP throughput and CPU efficiency.
 
-- Pure VirtIO: ( Deliver higher bulk TCP )
+**SR-IOV** : Near native HW Performancem by-passing Host software bridge. 
+
+**OVS-DPDK** : Low latency and low packet drop rate ( as its by-passing OS network stack )
+
+**vDPA** : vhost data path acceleration: CX-5 limitation. (using Linux generic vDPA, CX-5 unable to bind )
+
+--- 
+
+- **Pure VirtIO**: ( Deliver higher bulk TCP )
 
 
 | Metric         | Pure VirtIO (single)  | PureVirtIO (double)|  OVS-DPDK     | SR-IOV (VF Direct) | vDPA       | Ideal / Best Scenario|
