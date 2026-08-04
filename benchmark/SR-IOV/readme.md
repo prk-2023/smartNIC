@@ -131,4 +131,66 @@ Step 5: test data path [VirtIO ][VF] <=DAC=> [VF][VIRTIO]
 
     pc1-[VM] -- [PF0 : VF0] === DAC === [VF0 : PF0] -- [VM]-pc2
 
+---
+
+Force the Physical and Virtual Link States "UP":
+
+
+- re-initialize the VF:
+
+```bash 
+echo 0 | sudo tee /sys/class/net/enp1s0f0np0/device/sriov_numvfs
+echo 1 | sudo tee /sys/class/net/enp1s0f0np0/device/sriov_numvfs
+```
+
+
+- Bring up the physical parent ports on both PCs to ensure the QSFP56 laser turns on:
+
+```bash 
+sudo ip link set enp1s0f0np0 up   # On PC 1 (adjust if using a different port like f1np1)
+sudo ip link set enp1s0f1np1 up   # On DGX PC (matching your interface)
+
+# On PC 1:
+sudo ip link set dev enp1s0f0np0 vf 0 state enable
+
+# On DGX PC:
+sudo ip link set dev enp1s0f1np1 vf 0 state enable
+```
+
+- Explicitly force the VF link state to enable using ip link on the physical interface. By default,
+  link-state auto can sometimes stay down if the hypervisor/host layer doesn't handshake properly with a
+  direct cable:
+
+```bash 
+# On PC 1:
+sudo ip link set dev enp1s0f0np0 vf 0 state enable
+
+# On DGX PC:
+sudo ip link set dev enp1s0f1np1 vf 0 state enable
+```
+
+set ip:
+```bash
+sudo ip addr add 10.0.0.18/24 dev enp1s0f0v0
+
+on DGX :
+sudo ip a d 10.0.0.10/24 dev enp1s0f0v0 
+```
+
+
+NO-CARRIER:
+If you see:
+```bash 
+ip a 
+...
+enp1s0f0v0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc mq state DOWN group default qlen 1000
+    link/ether aa:4f:bc:22:f2:40 brd ff:ff:ff:ff:ff:ff
+    inet 10.0.0.18/24 scope global enp1s0f0v0
+       valid_lft forever preferred_lft forever
+...
+```
+The NO-CARRIER state on the VF interface (e.g., enp1s0f0v0) happens because Mellanox VFs inherit their link state from the physical parent port. If the physical parent port's counterpart on the remote end isn't fully trained, or if the VF link state mode is set to auto or disable before a connection is established, the VF remains down.
+
+Or Check if the DAC is plugged in correctly and to the correct port.
+
 

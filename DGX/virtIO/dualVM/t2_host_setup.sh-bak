@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# t2_host_setup.sh — prepares the DGX host for the t2 (VM<->VM virtio) test:
+#   br-left  (PF0 + vnet0) and br-right (PF1 + vnet1) — the test-path bridges
+#
+# Management/internet/SSH for both VMs uses QEMU's built-in SLIRP networking (configured
+# in t2_launch_vm.sh) instead of a host bridge — nothing to set up here for it, and no
+# iptables rules on the host, avoiding the whole class of firewalld/podman/ordering
+# issues a host-side NAT bridge ran into. Nothing here touches your live SSH interface.
+#
+# Run t2_perf_apply.sh BEFORE this for best results (not required, but recommended).
+
+set -euo pipefail
+source "$(dirname "$0")/t2_config.sh"
+
+echo "===== t2 host setup ====="
+
+### ---- 1. Test-path bridges: br-left (PF0+vnet0), br-right (PF1+vnet1) ----
+echo "[1/4] Creating ${BR_LEFT} (${PF0} + ${TAP_LEFT})"
+if ! ip link show "${BR_LEFT}" &>/dev/null; then
+    sudo ip link add "${BR_LEFT}" type bridge
+    sudo ip link set "${BR_LEFT}" type bridge stp_state 0
+fi
+
+    sudo ip link set "${PF0}" master "${BR_LEFT}"
+    sudo ip addr flush dev "${PF0}"
+    sudo ip link set "${PF0}" up
+    sudo ip link set "${BR_LEFT}" up
+#else
+#    echo "  ${BR_LEFT} already exists, skipping creation"
+#fi
+
+#if ! ip link show "${TAP_LEFT}" &>/dev/null; then
+#    sudo ip tuntap add dev "${TAP_LEFT}" mode tap multi_queue user "${TAP_USER}"
+#    sudo ip link set "${TAP_LEFT}" master "${BR_LEFT}"
+#    sudo ip link set "${TAP_LEFT}" up
+#else
+#    echo "  ${TAP_LEFT} already exists, skipping creation"
+#fi
+if ! ip link show "${TAP_LEFT}" &>/dev/null; then
+    sudo ip tuntap add dev "${TAP_LEFT}" mode tap multi_queue user "${TAP_USER}"
+fi
+
+sudo ip link set "${TAP_LEFT}" master "${BR_LEFT}"
+sudo ip link set "${TAP_LEFT}" up
+
+echo "[2/4] Creating ${BR_RIGHT} (${PF1} + ${TAP_RIGHT})"
+if ! ip link show "${BR_RIGHT}" &>/dev/null; then
+    sudo ip link add "${BR_RIGHT}" type bridge
+    sudo ip link set "${BR_RIGHT}" type bridge stp_state 0
+fi 
+    sudo ip link set "${PF1}" master "${BR_RIGHT}"
+    sudo ip addr flush dev "${PF1}"
+    sudo ip link set "${PF1}" up
+    sudo ip link set "${BR_RIGHT}" up
+##else
+##    echo "  ${BR_RIGHT} already exists, skipping creation"
+##fi
+#if ! ip link show "${TAP_RIGHT}" &>/dev/null; then
+#    sudo ip tuntap add dev "${TAP_RIGHT}" mode tap multi_queue user "${TAP_USER}"
+#    sudo ip link set "${TAP_RIGHT}" master "${BR_RIGHT}"
+#    sudo ip link set "${TAP_RIGHT}" up
+#else
+#    echo "  ${TAP_RIGHT} already exists, skipping creation"
+#fi
+if ! ip link show "${TAP_RIGHT}" &>/dev/null; then
+    sudo ip tuntap add dev "${TAP_RIGHT}" mode tap multi_queue user "${TAP_USER}"
+fi
+
+sudo ip link set "${TAP_RIGHT}" master "${BR_RIGHT}"
+sudo ip link set "${TAP_RIGHT}" up
+
+
+
+### ---- 3. Sanity checks ----
+echo "[3/3] Sanity checks"
+for CHECK in "${TAP_LEFT}:${BR_LEFT}" "${PF0}:${BR_LEFT}" "${TAP_RIGHT}:${BR_RIGHT}" "${PF1}:${BR_RIGHT}"; do
+    DEV="${CHECK%%:*}"; BR="${CHECK##*:}"
+    bridge link show "$DEV" 2>/dev/null | grep -q "master ${BR}" \
+        && echo "  OK: ${DEV} enslaved to ${BR}" \
+        || { echo "  ERROR: ${DEV} not enslaved to ${BR}"; exit 1; }
+done
+lsmod | grep -q vhost_net || sudo modprobe vhost_net
+[[ -e /dev/vhost-net ]] && echo "  OK: /dev/vhost-net present" || echo "  WARNING: /dev/vhost-net missing"
+
+echo
+echo "Done."
+echo "  ${BR_LEFT}  : ${PF0} + ${TAP_LEFT} (VM1 test path)"
+echo "  ${BR_RIGHT} : ${PF1} + ${TAP_RIGHT} (VM2 test path)"
+echo "  Mgmt/internet/SSH: handled per-VM by QEMU SLIRP in t2_launch_vm.sh - nothing to check here"
+echo
+echo "Next: run t2_build_guest_image.sh 1   then   t2_build_guest_image.sh 2"

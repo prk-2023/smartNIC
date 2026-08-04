@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# t2_build_guest_image.sh <1|2> — builds one VM's overlay disk + cloud-init seed.
+# Run twice: ./t2_build_guest_image.sh 1   then   ./t2_build_guest_image.sh 2
+# The mgmt NIC (ens-mgmt) is what gives cloud-init internet access for its package
+# install at first boot, and is also the SSH-reachable interface (via the host's DNAT).
+
+set -euo pipefail
+source "$(dirname "$0")/t2_config.sh"
+
+
+VM_NUM="${1:?Usage: $0 <1|2>}"
+[[ "$VM_NUM" == "1" || "$VM_NUM" == "2" ]] || { echo "VM_NUM must be 1 or 2"; exit 1; }
+
+if [[ "$VM_NUM" == "1" ]]; then
+    TEST_MAC="$VM1_TEST_MAC"; TEST_IP="$VM1_TEST_IP"
+    MGMT_MAC="$MGMT_MAC_VM1"; MGMT_IP="$VM1_MGMT_IP"
+    HOSTNAME="t2-vm1"
+else
+    TEST_MAC="$VM2_TEST_MAC"; TEST_IP="$VM2_TEST_IP"
+    MGMT_MAC="$MGMT_MAC_VM2"; MGMT_IP="$VM2_MGMT_IP"
+    HOSTNAME="t2-vm2"
+fi
+
+WORKDIR="$(pwd)/guest-image"
+BASE_IMG="${WORKDIR}/guest-base.img"
+OVERLAY_QCOW2="./t2_guest-vm${VM_NUM}.qcow2"
+SEED_ISO="./t2_seed-vm${VM_NUM}.iso"
+DISK_SIZE="20G"
+
+mkdir -p "${WORKDIR}"
+
+echo "===== Building image for VM${VM_NUM} (test MAC ${TEST_MAC}, test IP ${TEST_IP}) ====="
+
+### ---- Reuse a previously-pulled base image if present; else pull fresh ----
+if [[ -f "$(pwd)/../virtio-dgx/guest-image/guest-base.img" ]]; then
+    echo "[1/5] Reusing already-pulled base image from an earlier VirtIO setup"
+    BASE_IMG="$(pwd)/../virtio-dgx/guest-image/guest-base.img"
+elif [[ -f "$BASE_IMG" ]]; then
+    echo "[1/5] Base image already present at ${BASE_IMG}, skipping pull"
+else
+    echo "[1/5] Pulling base image: ${BASE_IMAGE}"
+    podman pull "${BASE_IMAGE}"
+    PULLED_ARCH=$(podman inspect "${BASE_IMAGE}" --format '{{.Architecture}}' 2>/dev/null || echo "unknown")
+    if [[ "${PULLED_ARCH}" != "arm64" && "${PULLED_ARCH}" != "aarch64" ]]; then
+        echo "  ERROR: expected arm64/aarch64, got '${PULLED_ARCH}'."
+        exit 1
+    fi
+    CID=$(podman create "${BASE_IMAGE}")
+    DISK_PATH_IN_CONTAINER=$(podman export "${CID}" | tar -tv | awk '{print $NF}' | grep -E '^disk/disk\.(img|qcow2|raw)$' | head -n1)
+    podman cp "${CID}:/${DISK_PATH_IN_CONTAINER#/}" "${BASE_IMG}"
+    podman rm -f "${CID}" >/dev/null 2>&1 || true
+fi
+
+BASE_FORMAT=$(qemu-img info "${BASE_IMG}" | awk -F': ' '/^file format:/{print $2}')
+
+echo "[2/5] Creating overlay: ${OVERLAY_QCOW2}"
+if [[ -f "${OVERLAY_QCOW2}" ]]; then
+    echo "  already exists, skipping (delete it first for a fresh overlay)"
+else
+    qemu-img create -f qcow2 -F "${BASE_FORMAT}" -b "$(realpath "${BASE_IMG}")" "${OVERLAY_QCOW2}" "${DISK_SIZE}"
+fi
+
+echo "[3/5] Writing cloud-init config files (user-data, meta-data, network-config)"
+mkdir -p "cloud-init-vm${VM_NUM}"
+
+# --- user-data ---
+cat > "cloud-init-vm${VM_NUM}/user-data" <<EOF
+#cloud-config
+hostname: ${HOSTNAME}
+
+users:
+  - name: bench
+    shell: /bin/bash
+    groups: wheel
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    ssh_authorized_keys:
+       - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMCtapH0UeU88XAI567UGv72yXtkPAuB7edI+wpRuGao realtek@gb10-rtk
+
+chpasswd:
+  expire: false
+  users:
+    - name: bench
+      password: test1234
+      type: text
+
+ssh_pwauth: True
+disable_root: false
+
+packages:
+  - iperf3
+  - sysstat
+  - NetworkManager
+  - qperf
+  # NOTE: "mpstat" deliberately NOT listed separately - it ships inside "sysstat";
+  # listing it as its own package name breaks dnf on Fedora.
+
+write_files:
+  # Interface config (test + mgmt) used to live here as hand-authored NM keyfiles,
+  # activated via runcmd nmcli commands below. Removed: write_files/runcmd both run in
+  # cloud-init's late "cloud_final_modules" stage, AFTER the "packages:" step - meaning
+  # ens-mgmt was never up yet when packages: tried to reach the internet, every single
+  # boot. Interface config now comes from a proper cloud-init network-config file
+  # instead (written further down, fed into the seed ISO), which cloud-init applies in
+  # its early network stage - structurally before packages: runs, not just usually.
+  - path: /etc/systemd/system/iperf3-server.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=iperf3 server (persistent, auto-restart)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      ExecStart=/usr/bin/iperf3 -s -p 5201
+      Restart=always
+      RestartSec=2
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/qperf-server.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=qperf server (persistent, auto-restart)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      ExecStart=/usr/bin/qperf
+      Restart=always
+      RestartSec=2
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /usr/local/bin/guest-monitor.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      RUN="\${1:-manual_run}"
+      DURATION="\${2:-70}"
+      OUTDIR="/var/log/bench/\${RUN}"
+      mkdir -p "\${OUTDIR}"
+      mpstat -P ALL 1 "\${DURATION}" > "\${OUTDIR}/guest_cpu.log" &
+      cat /proc/interrupts | grep -i virtio > "\${OUTDIR}/interrupts_before.txt"
+      wait
+      cat /proc/interrupts | grep -i virtio > "\${OUTDIR}/interrupts_after.txt"
+      ethtool -S ens-test > "\${OUTDIR}/ethtool_after.txt" 2>/dev/null
+      echo "guest monitor done: \${RUN}" > "\${OUTDIR}/DONE"
+
+  - path: /etc/systemd/system/guest-monitor@.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Guest-side monitoring for run %i
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/guest-monitor.sh %i 70
+
+  - path: /etc/systemd/system/NetworkManager-wait-online.service.d/override.conf
+    permissions: '0644'
+    content: |
+      [Service]
+      TimeoutStartSec=5s
+
+  - path: /etc/cloud/cloud.cfg.d/99-enable-cloudinit-networking.cfg
+    permissions: '0644'
+    content: |
+      network:
+        config: enabled
+
+runcmd:
+  - [ rm, -f, /etc/cloud/cloud.cfg.d/subiquity-disable-cloudinit-networking.cfg ]
+  - [ systemctl disable, --now, NetworkManager-wait-online.service ]
+  - [ systemctl, enable, --now, iperf3-server.service ]
+  - [ systemctl, enable, --now, qperf-server.service ]
+  - [ mkdir, -p, /var/log/bench ]
+
+final_message: "cloud-init finished: ens-test=${TEST_IP}/${TEST_PREFIX}, ens-mgmt=${MGMT_IP}"
+EOF
+
+# --- meta-data ---
+cat > "cloud-init-vm${VM_NUM}/meta-data" <<EOF
+instance-id: ${HOSTNAME}-01
+local-hostname: ${HOSTNAME}
+EOF
+
+# Proper cloud-init network-config (NoCloud datasource) - applied in cloud-init's early
+# network stage, structurally before "packages:" runs. set-name actually renames the
+# device via a generated udev rule, so ens-test/ens-mgmt are real interface names after
+# this (matches what guest-monitor.sh's "ethtool -S ens-test" expects).
+cat > "cloud-init-vm${VM_NUM}/network-config" <<EOF
+version: 2
+ethernets:
+  ens-test:
+    match:
+      name: enp0s1
+    set-name: ens-test
+    addresses: ["${TEST_IP}/${TEST_PREFIX}"]
+    dhcp4: false
+    optional: true
+  ens-mgmt:
+    match:
+      name: enp0s2
+    set-name: ens-mgmt
+    addresses: ["${MGMT_IP}"]
+    routes:
+      - to: 0.0.0.0/0 
+      via: "${MGMT_GW}"
+    nameservers:
+      addresses: [${MGMT_DNS}]
+    dhcp4: false
+    optional: true
+EOF
+
+echo "[4/5] Building ${SEED_ISO}"
+if command -v cloud-localds >/dev/null 2>&1; then
+    cloud-localds --network-config="cloud-init-vm${VM_NUM}/network-config" \
+        "${SEED_ISO}" "cloud-init-vm${VM_NUM}/user-data" "cloud-init-vm${VM_NUM}/meta-data"
+elif command -v genisoimage >/dev/null 2>&1; then
+    genisoimage -output "${SEED_ISO}" -volid cidata -joliet -rock \
+        "cloud-init-vm${VM_NUM}/user-data" "cloud-init-vm${VM_NUM}/meta-data" "cloud-init-vm${VM_NUM}/network-config"
+elif command -v xorriso >/dev/null 2>&1; then
+    xorriso -as genisoimage -output "${SEED_ISO}" -volid cidata -joliet -rock \
+        "cloud-init-vm${VM_NUM}/user-data" "cloud-init-vm${VM_NUM}/meta-data" "cloud-init-vm${VM_NUM}/network-config"
+else
+    echo "No ISO tool found (cloud-localds / genisoimage / xorriso). Install one."
+    exit 1
+fi
+
+echo "[5/5] Installing packages into the image directly (belt-and-suspenders alongside cloud-init)"
+##sudo virt-customize -v -x -a "${OVERLAY_QCOW2}" --install iperf3,sysstat,qperf,mpstat
+echo "skipping installation of packges on over lay as it fails on debian based systems"
+
+echo
+echo "Done: VM${VM_NUM}"
+echo "  Overlay      : ${OVERLAY_QCOW2}"
+echo "  Seed ISO     : ${SEED_ISO}"
+echo "  Test iface   : ens-test, MAC ${TEST_MAC}, IP ${TEST_IP}/${TEST_PREFIX} (no gateway)"
+echo "  Mgmt iface   : ens-mgmt, MAC ${MGMT_MAC}, IP ${MGMT_IP} (gw ${MGMT_GW}, dns ${MGMT_DNS}, via SLIRP)"
+echo "  REMINDER: replace the ssh_authorized_keys placeholder above (password '${GUEST_PASSWORD}' works meanwhile)"
