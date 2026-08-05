@@ -1,0 +1,8 @@
+{
+  "tcp_throughput_gbps": 79.07,
+  "udp_pps": 730009.0,
+  "udp_lost_percent": 0.759,
+  "tcp_latency": "15.3 us",
+  "udp_latency": "14.9 us",
+  "host_cpu_busy_pct": 50.8
+}
