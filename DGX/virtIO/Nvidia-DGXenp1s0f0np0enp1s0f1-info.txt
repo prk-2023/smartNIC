@@ -1,0 +1,306 @@
+Nvidia DGX enp1s0f0np0, enp1s0f1np1 , enP2p1s0f0np0 , enP2p1s0f1np1:are all actually the exact same physical port 0 mirrored across two different PCI domains (Grace-side vs. GPU-side).
+
+On systems like the [NVIDIA DGX Spark](https://www.nvidia.com/en-us/products/workstations/dgx-spark/) utilizing the GB10 Grace Blackwell architecture, a single physical ConnectX-7 port (such as port 0) maps to multiple logical network interfaces exposed across separate PCI domains (Grace/CPU-side vs. GPU/SoC-side) due to multi-host PCIe constraints. [1, 2, 3]
+## Why Multiple Interfaces Exist
+
+* Multi-Host Limitation: The SoC limits individual PCIe paths per device to ×4 width. [1, 3]
+* Bandwidth Aggregation: To push full 200GbE throughput on a single physical port, the system utilizes multi-host capabilities, combining separate ×4 PCIe links from both the CPU and GPU domains. [1, 3]
+* Interface Mapping:
+* enp1s0f0np0 corresponds to physical port 0 on the Grace-side (PCI domain 0000).
+   * enP2p1s0f0np0 corresponds to the exact same physical port 0 mirrored on the GPU-side (PCI domain 0002). [2, 4]
+
+## Interface Breakdown
+
+* Port 0 Aliases: enp1s0f0np0 and enP2p1s0f0np0 (representing the two halves of physical port 0).
+* Port 1 Aliases: enp1s0f1np1 and enP2p1s0f1np1 (representing the two halves of physical port 1). [2, 3, 4]
+
+If you are configuring a cluster, would you like guidance on setting up a balance-XOR bond between these mirrored domain interfaces or selecting the optimal active port for NCCL performance?
+
+[1] [https://www.linkedin.com](https://www.linkedin.com/pulse/connecting-two-sparks-andrew-myers-p9gme)
+[2] [https://cdck-file-uploads-global.s3.dualstack.us-west-2.amazonaws.com](https://cdck-file-uploads-global.s3.dualstack.us-west-2.amazonaws.com/nvidia/original/4X/1/c/0/1c00db8b4da495ad69f73cbf155dd46e64410148.pdf)
+[3] [https://github.com](https://github.com/eugr/spark-vllm-docker/blob/main/docs/NETWORKING.md)
+[4] [https://cdck-file-uploads-global.s3.dualstack.us-west-2.amazonaws.com](https://cdck-file-uploads-global.s3.dualstack.us-west-2.amazonaws.com/nvidia/original/4X/1/c/0/1c00db8b4da495ad69f73cbf155dd46e64410148.pdf)
+
+
+=====================
+To understand how one physical port appears in two different places, it helps to look at how the Nvidia Grace Hopper or Grace Blackwell Superchip is built.
+Here is the breakdown of how this mirroring works and what the different "sides" mean.
+## What is "Grace-side" vs. "GPU-side"?
+A standard computer has one motherboard, one CPU, and a PCIe slot for a GPU. A Nvidia Superchip is different. It puts a CPU and a GPU right next to each other on the same board, connected by a high-speed highway called NVLink-C2C. [1, 2, 3, 4]
+Because they are so powerful, they act like two separate computers living on the same chip: [5]
+
+* Grace-side (CPU Domain): This is the Arm-based "Grace" CPU running your standard operating system (like Ubuntu). It handles standard OS tasks, storage, and traditional network traffic.
+* GPU-side (SoC / BlueField Domain): This is the "Hopper" or "Blackwell" GPU side. In these architectures, the network card (ConnectX-7 or BlueField-3) is directly wired to the GPU's internal PCIe switch. [6, 7]
+
+## What does "Mirrored Across PCI Domains" Mean?
+In a normal PC, a network card plugs into one PCIe slot. The CPU sees it, assigns it a single address (like enp1s0f0), and that is it.
+On a DGX Superchip, the network card is a Multi-Host NIC. It physically has wires running to both the CPU and the GPU at the same time.
+Because the CPU and the GPU have their own separate PCIe environments (called PCI Domains), they cannot see each other's internal paths. Therefore, the network card exposes itself twice: [8, 9, 10]
+
+   1. Domain 0000 (Grace CPU): The OS sees a network interface (enp1s0f0np0).
+   2. Domain 0002 (GPU / Switch): The OS sees a second network interface (enP2p1s0f0np0).
+
+They have different names because they are coming down different physical PCIe wires, but they terminate at the exact same physical Ethernet or InfiniBand port on the back of the machine.
+## Why do they do this?
+There are two major reasons for this architectural design:
+
+* Bypassing the CPU for Speed (RDMA): When the GPU needs to talk to another server over the network, it does not want to ask the Grace CPU for help. That wastes time. Because the port is "mirrored" on the GPU side, the GPU can send data straight out the physical port. [11]
+* Getting Around Bandwidth Limits: A single internal connection on the chip might not be wide enough to support the massive 200Gbps or 400Gbps speed of the network port. By splitting the traffic across two different PCIe domains (e.g., two ×4 links), the system combines them to get full network speed.
+
+Are you looking at this from a troubleshooting perspective because an application is showing duplicate interfaces, or are you just curious about the hardware architecture?
+
+[1] [https://premioinc.com](https://premioinc.com/blogs/blog/pcie-4-0-pci-express-gen-4)
+[2] [https://hpc-wiki.info](https://hpc-wiki.info/hpc/NUMA)
+[3] [https://newsletter.semianalysis.com](https://newsletter.semianalysis.com/p/cpus-are-back-the-datacenter-cpu)
+[4] [https://dnhkng.github.io](https://dnhkng.github.io/posts/gh200-benchmarking/)
+[5] [https://blogs.nvidia.com](https://blogs.nvidia.com/blog/grace-cpu-c1/)
+[6] [https://imbue.com](https://imbue.com/blog/70b-infrastructure)
+[7] [https://www.spectrocloud.com](https://www.spectrocloud.com/blog/build-your-own-bare-metal-cloud-with-nvidia-dpf-zero-trust)
+[8] [https://dottedmag.net](https://dottedmag.net/blog/pci-basics/)
+[9] [https://docs.discoverer.bg](https://docs.discoverer.bg/optimisation-dgx-h200-unified-memory.html)
+[10] [https://giahuy04.medium.com](https://giahuy04.medium.com/hello-world-cuda-c-ddfd7a8aeb8c)
+[11] [https://lewislin.substack.com](https://lewislin.substack.com/p/part-4-the-memory-hierarchy-mountain)
+
+=============================
+
+When you connect a DAC cable directly as a crossover loopback between Port 0 and Port 1 on the exact same NVIDIA DGX network card (ConnectX-7), Layer 2 (L2) traffic passes through at the physical layer, but the operating system drops the packets.
+The physical link lights will turn green and state UP, but you will not be able to ping or broadcast L2 traffic between the ports. This behavior stems from three specific architectural features of NVIDIA multi-host networking: [1]
+## 1. Internal eSwitch Loopback Blocking
+Inside a ConnectX-7 ASIC, there is an embedded hardware switch (called an eSwitch).
+
+* When you attempt to route traffic from Port 0 to Port 1 on the same card, the ASIC's eSwitch notices that the destination MAC address or route belongs to its own hardware footprint. [1]
+* Instead of pushing the packet out through the physical laser/copper of Port 0 and back into Port 1 via the DAC, the internal eSwitch logic attempts to short-circuit the path internally. [2]
+* Because external loopback/crossover routing creates a massive risk for infinite L2 network loops, the ConnectX firmware deliberately blocks or drops self-destined traffic moving across its own physical port boundaries unless explicitly configured in a diagnostic mode. [2]
+
+## 2. Linux Kernel "Martian" Packet Filtering
+Because the ports are mirrored across two PCI domains, the Linux operating system sees Port 0 and Port 1 twice. When you send a packet out of enp1s0f0np0 (Port 0) and it loops into enp1s0f1np1 (Port 1), the Linux kernel panics at the routing layer: [3, 4]
+
+* The kernel receives a packet on Port 1, but its internal routing table says that the source IP/MAC address belongs to Port 0—which is hosted on the exact same operating system instance.
+* The Linux networking stack identifies this as an asymmetric routing violation (Martian packet). It assumes a malicious spoofing attempt or a critical network loop is occurring, and silently drops the packet before it can pass through Layer 2 into application memory.
+
+## 3. Multi-Host Shared MAC Context
+In a DGX multi-host architecture, the two physical ports share a unified ASIC boundary. When you pass L2 traffic over a crossover cable on the same card, the hardware struggles to differentiate between a genuinely unique external endpoint and itself. The ASIC cannot simultaneously register the same local MAC contexts acting as both the ingress and egress authority on a shared hardware plane.
+## How to Bypass This (For Testing)
+If you are doing this crossover setup to run diagnostic or throughput loopback tests, you have to explicitly tell the hardware to allow it:
+
+   1. Disable Linux Reverse Path Filtering: Instruct the OS to stop dropping packets that originate from its own subnets on different interfaces:
+
+   sysctl -w net.ipv4.conf.all.rp_filter=0
+   sysctl -w net.ipv4.conf.default.rp_filter=0
+
+   2. Enable Firmware External Loopback Mode: You must use the NVIDIA Mellanox Firmware Tools (MFT) to force the ASIC to ignore the internal eSwitch and send traffic directly out to the cable:
+
+   # Use mlxlink to force external loopback behavior on the ports
+   mlxlink -d <your_device_pcie_address> --loopback EX
+
+   [2]
+
+Are you doing this crossover configuration to test the maximum throughput of the ConnectX-7 card, or are you trying to build a two-node DGX cluster without using an external switch? [3, 5, 6]
+
+[1] [https://forums.developer.nvidia.com](https://forums.developer.nvidia.com/t/mellonax-loopback-test/240030)
+[2] [https://forums.developer.nvidia.com](https://forums.developer.nvidia.com/t/does-the-connectx5-support-far-end-loopback-if-so-how-do-i-enable-it/206614)
+[3] [https://forums.developer.nvidia.com](https://forums.developer.nvidia.com/t/low-throughput-on-200g-qsfp56-dac-link-between-two-nvidia-dgx-spark-systems/368523)
+[4] [https://docs.nvidia.com](https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html)
+[5] [https://resilient-tec.com](https://resilient-tec.com/blogs/news/why-connect-two-or-more-nvidia-dgx-sparks-hardware-limits-topologies-and-scaling-explained)
+[6] [https://forums.developer.nvidia.com](https://forums.developer.nvidia.com/t/how-many-dgx-sparks-can-be-interconnected-using-connectx/348459)
+
+
+===================================
+
+Are the above setting retian on reboots?
+
+No, the firmware external loopback mode set via mlxlink does not retain on a system reboot. [1]
+The mlxlink tool operates dynamically on the live hardware registers. Once the DGX system reboots, power cycles, or the Mellanox driver unloads/reloads, the ConnectX-7 ASIC automatically resets its runtime registers back to their default state. [2, 3, 4]
+## How to Revert the Setting Without Rebooting
+If you finish your testing and want to immediately revert to standard production networking without wasting time on a full system reboot, you can clear the loopback config manually using the MFT suite: [5]
+
+   1. Bring the physical port state down:
+   On ConnectX-7 and newer ASICs, changing loopback states requires the link state to be fully down (not polling).
+
+   mlxlink -d <your_device_pcie_address> --port_state DN
+
+   2. Clear the loopback configuration:
+   Pass the NO argument to explicitly disable the loopback mode.
+
+   mlxlink -d <your_device_pcie_address> --loopback NO
+
+   3. Bring the physical port back up:
+
+   mlxlink -d <your_device_pcie_address> --port_state UP
+
+   [3, 6]
+
+## Persistent Alternative (Warning)
+If you ever mistakenly use mlxconfig (instead of mlxlink) to alter physical layer configurations or write parameters to the non-volatile database using flags like --database, those changes will persist across reboots. If you suspect a setting was saved permanently, you can query or clear it via: [7]
+
+# Check the persistent NVRAM config for loopback or link settings
+mlxconfig -d <your_device_pcie_address> query
+# Reset the entire ConnectX-7 adapter back to official factory defaults
+mlxconfig -d <your_device_pcie_address> reset
+
+Do you need help finding the exact PCIe/MST device addresses for your specific ConnectX-7 cards to run these commands?
+
+[1] [https://groups.google.com](https://groups.google.com/g/cloudlab-users/c/XfADrVvL4wA)
+[2] [https://forums.developer.nvidia.com](https://forums.developer.nvidia.com/t/fec-display-n-a-on-adapter/314026)
+[3] [https://networking-docs.nvidia.com](https://networking-docs.nvidia.com/mftswum/4.36.0/mlxlink-utility)
+[4] [https://forums.developer.nvidia.com](https://forums.developer.nvidia.com/t/connectx-8-c8180-not-support-loopback-rm-rx-to-tx/373802)
+[5] [https://forums.developer.nvidia.com](https://forums.developer.nvidia.com/t/does-the-connectx5-support-far-end-loopback-if-so-how-do-i-enable-it/206614)
+[6] [https://networking-docs.nvidia.com](https://networking-docs.nvidia.com/mftswum/4.36.0/mlxlink-utility)
+[7] [https://enterprise-support.nvidia.com](https://enterprise-support.nvidia.com/s/article/mlxlink)
+
+-----------------------------
+
+Using network namespaces works without changing the mlxlink hardware loopback settings because it completely bypasses the Linux Kernel "Martian" Packet Filtering layer.
+However, there is an important catch regarding how the traffic actually flows. Here is exactly what happens under the hood when you use namespaces. [1]
+## 1. It Solves the OS Routing Problem (No More Martians)
+In a standard configuration, the Linux kernel controls all network interfaces in a single, shared routing table. When you try to loop a packet from Port 0 to Port 1, the kernel sees a packet arrive on Port 1 that claims to be from an IP address owned by Port 0 (the same OS). It assumes a loop or a security attack and drops it instantly. [2]
+When you isolate Port 0 into Namespace_A and Port 1 into Namespace_B:
+
+* Each namespace acts as a completely independent router with its own isolated network stack, routing table, and ARP cache.
+* Namespace_B has absolutely no knowledge that Port 0 exists or what its IP/MAC address is.
+* When the packet arrives, the kernel treats it exactly like a packet coming from a completely separate physical computer. The "Martian" filter is never triggered. [3, 4, 5, 6, 7]
+
+## 2. The Catch: The Traffic Never Leaves the Card (Internal eSwitch)
+While network namespaces solve the Linux kernel problem, they do not force the traffic to go out through your physical DAC cable. [8]
+Inside the ConnectX-7 card, the embedded hardware switch (eSwitch) is constantly monitoring the MAC addresses of its ports.
+
+* When Namespace_A sends a packet out of Port 0 destined for Port 1, the packet hits the ConnectX-7 ASIC.
+* The ASIC looks at the destination MAC address, recognizes that it owns Port 1, and routes the data internally within the chip's silicon.
+* The traffic is handed straight over to Port 1 and climbs up into Namespace_B.
+
+## Why Your Setup "Works" (But Isn't Using the Cable)
+Because the internal eSwitch handles the loopback perfectly inside the chip, you will successfully be able to ping, run iperf3, and pass L2 traffic between the namespaces.
+The link lights on your DAC cable will be green, but no actual data packets are traveling through the physical copper/optical fibers of the DAC. The DAC is merely serving as a dummy plug to trick the firmware into thinking the physical link is UP. If you unplug the DAC, the link state drops to DOWN, the eSwitch disables the interfaces, and the communication stops. [9]
+## Summary of the Difference
+
+| Method | Does Traffic Go Through the DAC Cable? | Requires Firmware Loopback? | Why it Works |
+|---|---|---|---|
+| Standard OS (No Namespaces) | No (Blocked by OS & Hardware) [3] | Yes (Requires mlxlink EX) [3] | Overrides both OS routing drops and hardware eSwitch blocking. |
+| Network Namespaces | No (Short-circuited inside the chip) | No | Bypasses OS routing filters; hardware automatically routes it internally. |
+
+If you are using this setup to test your application logic or software stack, network namespaces are perfect and highly efficient. However, if you are trying to test the physical health, signal integrity, or maximum throughput of the physical DAC cable, you must use the mlxlink --loopback EX method.
+Would you like the specific commands to check the physical port counters (tx_packets vs. internal eSwitch counters) to prove whether the data is truly staying inside the chip?
+
+[1] [https://community.ibm.com](https://community.ibm.com/community/user/blogs/sami-kuronen/2025/04/02/public-networking-with-vcfaas)
+[2] [https://manual.uberspace.de](https://manual.uberspace.de/background-network/)
+[3] [https://free5gc.org](https://free5gc.org/blog/20250430/20250430/)
+[4] [https://medium.com](https://medium.com/@raisul.me/create-network-namespaces-and-connect-them-devices-using-virtual-ethernet-veth-b707cbc0a1b2)
+[5] [https://www.nightshift.sh](https://www.nightshift.sh/blog/containers-without-magic-01)
+[6] [https://linuxgd.medium.com](https://linuxgd.medium.com/expert-guide-to-network-namespaces-in-linux-329171dca981)
+[7] [https://quizlet.com](https://quizlet.com/634992599/ccna-vol-1-flash-cards/)
+[8] [https://dev.to](https://dev.to/ajinkya_singh_2c02bd40423/container-networking-demystified-a-deep-dive-into-linux-network-namespaces-3gll)
+[9] [https://forums.fogproject.org](https://forums.fogproject.org/topic/11377/configuring-net0-slowly)
+
+
+
+==== Script to force loopback EX mode ====
+
+
+
+#!/bin/bash
+
+# Ensure the script is run as root
+if [ "$EUID" -ne 0 ]; then
+  echo "[!] Please run this script with sudo or as root."
+  exit 1
+fi
+
+# ==========================================
+# CONFIGURATION VARIABLES
+# ==========================================
+# PCIe Device Addresses
+DEV_0="0000:01:00.0"
+DEV_1="0000:01:00.1"
+
+# OS Interface Names
+INT_0="enp1s0f0np0"
+INT_1="enp1s0f1np1"
+
+# IP Address Network Configuration
+IP_0="10.0.1.1"
+IP_1="10.0.2.1"
+NETMASK="/24"
+
+echo "=========================================================="
+echo " Starting ConnectX-7 External Loopback Configuration"
+echo "=========================================================="
+
+# 1. SHUT DOWN INTERFACES AT OS AND FIRMWARE LAYER
+echo "[*] Step 1: Bringing down OS interfaces and forcing physical link down..."
+ip link set "$INT_0" down
+ip link set "$INT_1" down
+mlxlink -d "$DEV_0" --port_state DN > /dev/null 2>&1
+mlxlink -d "$DEV_1" --port_state DN > /dev/null 2>&1
+sleep 2
+
+# 2. FORCE SPEED & DISABLE AUTO-NEGOTIATION (Prerequisite for EX Loopback)
+echo "[*] Step 2: Disabling hardware auto-negotiation (forcing link mode)...Make sure to pass correct link speed format"
+mlxlink -d "$DEV_0" --link_mode_force --speed 100G_2X > /dev/null 2>&1
+mlxlink -d "$DEV_1" --link_mode_force > --speed 100G_2X /dev/null 2>&1
+
+# 3. ENGAGE HARDWARE LEVEL EXTERNAL LOOPBACK MODE
+echo "[*] Step 3: Enabling External Loopback (EX) on firmware registers..."
+mlxlink -d "$DEV_0" --loopback EX > /dev/null 2>&1
+mlxlink -d "$DEV_1" --loopback EX > /dev/null 2>&1
+
+# 4. WAKE THE PHYSICAL AND LOGICAL LAYER BACK UP
+echo "[*] Step 4: Powering up ports and bringing up OS interfaces..."
+mlxlink -d "$DEV_0" --port_state UP > /dev/null 2>&1
+mlxlink -d "$DEV_1" --port_state UP > /dev/null 2>&1
+ip link set "$INT_0" up
+ip link set "$INT_1" up
+sleep 3
+
+# Verify hardware accepted the state change
+LB_STATUS_0=$(mlxlink -d "$DEV_0" | grep -i "Loopback Mode" | awk -F ':' '{print $2}' | xargs)
+LB_STATUS_1=$(mlxlink -d "$DEV_1" | grep -i "Loopback Mode" | awk -F ':' '{print $2}' | xargs)
+echo "    -> Firmware Port 0 Status: $LB_STATUS_0"
+echo "    -> Firmware Port 1 Status: $LB_STATUS_1"
+
+# 5. IP AND NETWORK LAYER SETUP
+echo "[*] Step 5: Flushing legacy IPs and assigning isolated subnets..."
+ip addr flush dev "$INT_0"
+ip addr flush dev "$INT_1"
+ip addr add "${IP_0}${NETMASK}" dev "$INT_0"
+ip addr add "${IP_1}${NETMASK}" dev "$INT_1"
+
+# 6. STATIC INTERFACE ROUTING (Forces data over the PCIe boundaries)
+echo "[*] Step 6: Injecting point-to-point hardware static routes..."
+ip route add "$IP_1" dev "$INT_0"
+ip route add "$IP_0" dev "$INT_1"
+
+# 7. CRITICAL KERNEL OVERRIDES (Bypassing routing/cross-talk drop behaviors)
+echo "[*] Step 7: Applying Linux sysctl overrides (rp_filter & accept_local)..."
+sysctl -w net.ipv4.conf.all.rp_filter=0 > /dev/null
+sysctl -w net.ipv4.conf.default.rp_filter=0 > /dev/null
+sysctl -w net.ipv4.conf."$INT_0".rp_filter=0 > /dev/null
+sysctl -w net.ipv4.conf."$INT_1".rp_filter=0 > /dev/null
+sysctl -w net.ipv4.conf."$INT_0".accept_local=1 > /dev/null
+sysctl -w net.ipv4.conf."$INT_1".accept_local=1 > /dev/null
+
+# 8. EXTRACT MAC ADDRESSES AND INJECT STATIC ARP ENTRIES
+echo "[*] Step 8: Dynamically binding hardware MAC addresses to bypass ARP..."
+MAC_0=$(cat /sys/class/net/"$INT_0"/address)
+MAC_1=$(cat /sys/class/net/"$INT_1"/address)
+
+if [ -z "$MAC_0" ] || [ -z "$MAC_1" ]; then
+    echo "[!] Error: Failed to extract MAC addresses. Ensure interfaces are up."
+    exit 1
+fi
+
+echo "    -> Extracted $INT_0 MAC: $MAC_0"
+echo "    -> Extracted $INT_1 MAC: $MAC_1"
+
+# Apply the cross-mapped static ARP keys
+arp -i "$INT_0" -s "$IP_1" "$MAC_1"
+arp -i "$INT_1" -s "$IP_0" "$MAC_0"
+
+echo "=========================================================="
+echo " Setup Completed Successfully!"
+echo "=========================================================="
+echo " Diagnostic Ping Command to test:"
+echo "   ping -I $INT_0 $IP_1 -c 3"
+echo "=========================================================="
+
+sudo mlxlink -d 0000:01:00.0 | grep -i loopback
+sudo mlxlink -d 0000:01:00.1 | grep -i loopback
