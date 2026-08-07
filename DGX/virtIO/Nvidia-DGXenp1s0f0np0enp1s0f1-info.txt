@@ -1,3 +1,9 @@
+Ref: 
+1. https://docs.nvidia.com/dgx/dgx-spark/dgx-spark.pdf
+2. Loopback test : https://cdck-file-uploads-global.s3.dualstack.us-west-2.amazonaws.com/nvidia/original/4X/1/c/0/1c00db8b4da495ad69f73cbf155dd46e64410148.pdf
+
+
+
 Nvidia DGX enp1s0f0np0, enp1s0f1np1 , enP2p1s0f0np0 , enP2p1s0f1np1:are all actually the exact same physical port 0 mirrored across two different PCI domains (Grace-side vs. GPU-side).
 
 On systems like the [NVIDIA DGX Spark](https://www.nvidia.com/en-us/products/workstations/dgx-spark/) utilizing the GB10 Grace Blackwell architecture, a single physical ConnectX-7 port (such as port 0) maps to multiple logical network interfaces exposed across separate PCI domains (Grace/CPU-side vs. GPU/SoC-side) due to multi-host PCIe constraints. [1, 2, 3]
@@ -304,3 +310,76 @@ echo "=========================================================="
 
 sudo mlxlink -d 0000:01:00.0 | grep -i loopback
 sudo mlxlink -d 0000:01:00.1 | grep -i loopback
+
+
+---- 
+## Standard PCIe hierarchy (with multiple domains) 
+
+```
+[ CPU / System Memory ]
+   │
+   ├─► [ PCIe Domain 0000 ] (Root Complex 1)
+   │      │
+   │      ├─► [ Root Port 0000:00:01.0 ]
+   │      │      └─► [ Bus 01 ] ──► [ GPU (0000:01:00.0) ]
+   │      │
+   │      └─► [ Root Port 0000:00:02.0 ]
+   │             └─► [ Bus 02 ] ──► [ PCIe Switch ]
+   │                                   │
+   │                                   ├─► [ Downstream Port 1 ] ──► [ NVMe SSD 1 (0000:03:00.0) ]
+   │                                   └─► [ Downstream Port 2 ] ──► [ NVMe SSD 2 (0000:04:00.0) ]
+   │
+   └─► [ PCIe Domain 0001 ] (Root Complex 2 / Second CPU Socket)
+          │
+          └─► [ Root Port 0001:00:01.0 ]
+                 └─► [ Bus 01 ] ──► [ 100G NIC (0001:01:00.0) ]
+```
+
+Key Elements ExplainedRoot Complex: The bridge between the CPU/memory and the PCIe fabric.
+Domain: The highest isolation level (e.g., 0000 vs 0001), bypassing the 256-bus limit per tree.
+Root Ports: The individual PCIe slots or lanes coming directly out of the Root Complex.
+Switches: Packet routers that expand a single port to connect multiple downstream endpoints.
+Endpoints: The actual hardware devices (GPU, NVMe, NIC) at the leaf nodes of the tree. 
+
+## How Linux maps PCIe topology:
+
+Linux maps PCIe topologies into clear paths using a standard address structure, a specialized virtual fs, 
+and strict hardware discovery during boot.
+
+### The Address Format (BDF)
+Linux identifies every unique PCIe path using the `Segment:Bus:Device.Function` (SBDF) format. 
+It appears in tools like lspci as 0000:00:01.0:
+
+* Segment (Domain): 16-bit hex (0000 to ffff). Identifies the independent Root Complex tree.
+* Bus: 8-bit hex (00 to ff). A single domain can hold up to 256 buses.
+* Device: 5-bit hex (00 to 1f). Represents a physical chip slot on that bus.
+* Function: 3-bit hex (0 to 7). Pinpoints a sub-component within a multi-functional device. [1] 
+
+### The Sysfs Virtual Directory Tree
+Linux exposes the exact hardware tree structure to user space inside the /sys/devices directory. 
+The folder hierarchy mirrors your physical hardware tree layout. [2, 3] 
+A path to a GPU looks like this:
+/sys/devices/pci0000:00/0000:00:01.0/0000:01:00.0/
+
+* pci0000:00: Represents Domain 0000, Bus 00 (The Root Bus).
+* /0000:00:01.0: Represents the Root Port bridge device on that root bus.
+* /0000:01:00.0: Represents the actual GPU sitting on Bus 01 downstream from that bridge. [4] 
+
+### The Boot Discovery Process
+
+   1. ACPI Scan: At boot, the Linux kernel queries the motherboard's ACPI tables (MCFG table).
+   2. Domain Allocation: The kernel reads the tables to learn how many independent Root Complexes exist and assigns them domain numbers.
+   3. Depth-First Enumeration: The kernel scans Bus 0, finds bridges (Root Ports), assigns them a secondary bus number, and immediately dives down to scan that new bus before returning to the parent level.
+   4. Driver Binding: Once the entire tree is mapped in memory, the kernel matches vendor IDs to load the correct device drivers.
+
+To see this mapping visually on your machine, you can run lspci -t to output a live text tree, or use ls -d /sys/devices/pci* to see your system's domains. [5] 
+Are you trying to find a specific device path for driver configuration, or are you setting up VFIO device passthrough for a virtual machine?
+
+[1] [https://kuleuven-diepenbeek.github.io](https://kuleuven-diepenbeek.github.io/osc-course/ch1-introos/filesystems/)
+[2] [https://www.linuxteck.com](https://www.linuxteck.com/unix-file-system-guide/)
+[3] [https://www.facebook.com](https://www.facebook.com/KodeKloudHQ/posts/-linux-file-system-hierarchy-know-this-master-linuxeverything-in-linux-starts-fr/1560470179420230/)
+[4] [https://www.baeldung.com](https://www.baeldung.com/linux/lspci)
+[5] [https://www.howtogeek.com](https://www.howtogeek.com/practical-uses-for-the-linux-lspci-command/)
+
+
+---
