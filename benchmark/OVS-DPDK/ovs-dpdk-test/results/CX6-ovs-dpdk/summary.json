@@ -1,0 +1,9 @@
+{
+  "tcp_throughput_gbps": 15.22,
+  "udp_pps": 691578.0,
+  "udp_lost_percent": 5.729,
+  "tcp_latency": "16.9 us",
+  "udp_latency": "15.5 us",
+  "host_cpu_busy_pct": 43.77,
+  "note": "host_cpu_busy_pct includes PMD threads busy-polling at ~100% on their dedicated cores by design. Use 'ovs-appctl dpif-netdev/pmd-stats-show' for precise processing vs. idle polling splits."
+}
