@@ -694,3 +694,28 @@ active
 - Now run the run script
 ./05-run_test_ovs_dpdk_dualvm.sh ovs_dpdk_dualvm_test_run1
 
+
+--- 
+jumbo frame setting: (manual)
+1. set mtu inside vm1 and vm2 to 9000 
+2. # Example for setting MTU on physical DPDK port PF0 (01:00.0 and 01:00.1)
+ovs-vsctl set Interface dpdk-p0 options:dpdk-devargs=0000:01:00.0 mtu_request=9000
+ovs-vsctl set Interface dpdk-p1 options:dpdk-devargs=0000:01:00.1 mtu_request=9000
+
+3. OVS bridges automatically adapt their MTU to match the minimum MTU of their attached ports. 
+   However, it is best practice to explicitly set them:
+
+    ovs-vsctl set bridge br-left mtu_request=9000
+    ovs-vsctl set bridge br-right mtu_request=9000
+
+4. The vhost-user Interfaces & QEMU (The VM Boundary) 
+    Enable Mergeable Buffers in QEMU: When launching VMs via QEMU/KVM, you must turn on 
+    `mrg_rxbuf=on` on the virtio-net device. Without this, QEMU will drop or truncate packets larger than 
+    1500 bytes before they even reach the guest OS:
+    ```
+    -netdev type=vhost-user,id=mynet1,chardev=char0 \
+    -device virtio-net-pci,netdev=mynet1,mrg_rxbuf=on
+    ```
+
+
+
