@@ -681,7 +681,7 @@ or
 - start vm1 
 ./04-launch_ovs_dpdk_vm_generic.sh vm1 /tmp/ovs-vhost/vhost-user0 52:54:00:aa:bb:01 tap-mgmt1 52:54:00:00:01:01 4,5
 - start vm2 
-./04-launch_ovs_dpdk_vm_generic.sh vm2 /tmp/ovs-vhost/vhost-user0 52:54:00:aa:bb:02 tap-mgmt1 52:54:00:00:01:02 6,7
+./04-launch_ovs_dpdk_vm_generic.sh vm2 /tmp/ovs-vhost/vhost-user1 52:54:00:aa:bb:02 tap-mgmt2 52:54:00:00:01:02 6,7
 
 ssh login  to check:
 $ ssh -i ~/.ssh/id_rsa bench@192.168.50.11
