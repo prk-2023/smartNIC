@@ -1,0 +1,12 @@
+
+1. Set the ConnectX-6 driver to switchdev mode:
+
+$ devlink dev eswitch set pci/0000:<your-pci-address> mode switchdev
+
+$ sudo devlink dev eswitch set pci/0000:01:00.0 mode switchdev
+$ sudo devlink dev eswitch set pci/0000:01:00.1 mode switchdev
+
+2. Enable hardware offload in Open vSwitch:
+
+$ sudo ovs-vsctl set Open_vSwitch . other_config:hw-offload=true
+$ sudo systemctl restart openvswitch
