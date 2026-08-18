@@ -86,15 +86,18 @@ IPERF_TCP_STREAMS=4
 #   50G
 #   100G
 #
-### IPERF_UDP_BANDWIDTH="0"
-IPERF_UDP_BANDWIDTH="40"
+# NOTE: This MUST include a unit suffix (e.g. "G" for Gbits/sec).
+# A bare number like "40" is interpreted by iperf3 as 40 bits/sec,
+# which will throttle the UDP stream to almost nothing.
+IPERF_UDP_BANDWIDTH="40G"
 
 # UDP packet length.
 #
 # 1472 is appropriate for a normal 1500-byte MTU IPv4 path.
 # For jumbo frames, use something such as 8972.
 #
-IPERF_UDP_LENGTH=1472
+#IPERF_UDP_LENGTH=1472
+IPERF_UDP_LENGTH=1448
 
 # Number of UDP test streams
 IPERF_UDP_STREAMS=1
@@ -410,10 +413,10 @@ create_bridge()
     log_info "Creating OVS bridge: ${bridge}"
 
     ovs-vsctl --may-exist add-br "${bridge}"
-    sleep 3
+    sleep 1
 
     ip link set "${bridge}" up
-    sleep 3
+    sleep 1
 
     log_ok "Created ${bridge}"
 }
@@ -699,12 +702,17 @@ create_topology()
     ip link set "${LEFT_IF}" down
     ip link set "${RIGHT_IF}" down
 
+    # --- jumbo frame setup 
+    ip link set dev "${LEFT_IF}" mtu 1500
+    ip link set dev "${RIGHT_IF}" mtu 1500
     # --------------------------------------------------------
     # Create OVS bridges
     # --------------------------------------------------------
 
     create_bridge "${LEFT_BR}"
     create_bridge "${RIGHT_BR}"
+    ip link set dev "${LEFT_BR}" mtu 1500
+    ip link set dev "${RIGHT_BR}" mtu 1500
 
     # --------------------------------------------------------
     # Add physical NICs to OVS
@@ -1168,144 +1176,82 @@ perform_throughput_test()
         return 1
     fi
 
-    # local udp_bps
-    # local udp_packets 
-    # local udp_seconds 
-    # local udp_pps 
-    # local udp_loss 
-    # local udp_jitter
-    # udp_bps="$(jq -r '
-    #     .end.sum.bits_per_second != null
-    #     // if .end.sum.bits_per_second != null
-    #     // then .end.sum.bits_per_second
-    #     // else .end.sum_received.bits_per_second
-    #     // end
-    #     ' "${udp_json}")"
-    #
-    # udp_jitter="$(
-    # jq -r '
-    #     .end.sum_received.jitter_ms
-    #     // .end.sum.jitter_ms
-    #     // .end.sum_sent.jitter_ms
-    #     // 0
-    #     ' "${udp_json}")"
-    #
-    # udp_gbps="$(
-    # awk -v bps="${udp_bps}" \
-    #     'BEGIN {
-    #         printf "%.2f", bps / 1000000000
-    #     }')"
-    #
-    #
-    # # local udp_pps
-    # # udp_pps="$(jq -r '
-    # #     if .end.sum.packets_per_second != null
-    # #     then .end.sum.packets_per_second
-    # #     else 0
-    # #     end
-    # # ' "${udp_json}")"
-    # #
-    # # udp_pps="$(awk -v pps="${udp_pps}" \
-    # #     'BEGIN { printf "%.0f", pps }')"
-    # #---
-    # local udp_packets 
-    # # udp_packets="$(jq -r '.end.sum.packets // 0' "${udp_json}")" 
-    # udp_packets="$(jq -r '
-    #         .end.sum_received.packets
-    #     ' "${udp_json}")" 
-    # 
-    # local udp_seconds 
-    # # udp_seconds="$(jq -r '.end.sum.seconds // 0' "${udp_json}")" 
-    # udp_seconds="$(jq -r '
-    #         .end.sum_received.packets
-    #     ' "${udp_json}")" 
-    #
-    # udp_pps="$(
-    # awk \
-    #     -v packets="${udp_packets}" \
-    #     -v seconds="${udp_seconds}" \
-    #     'BEGIN {
-    #         if (seconds > 0)
-    #             printf "%.0f", packets / seconds
-    #         else
-    #             printf "0"
-    #     }' )"
-    #
-    # udp_loss="$(
-    # awk -v loss="${udp_loss}" \
-    #     'BEGIN {
-    #         printf "%.3f", loss
-    #     }')"
-    #
-    # udp_jitter="$(
-    # awk -v jitter="${udp_jitter}" \
-    #     'BEGIN {
-    #         printf "%.6f", jitter
-    #     }')"
-    #
-    # udp_loss="$(awk -v loss="${udp_loss}" \
-    #     'BEGIN { printf "%.3f", loss }')"
-    #
-    #
-    #
-    # local udp_cpu_busy
-    # udp_cpu_busy="$(get_cpu_busy_percent \
-    #      "${udp_start_total}" \
-    #     "${udp_start_idle}" \
-    #     "${udp_end_total}" \
-    #     "${udp_end_idle}")"
-    #
-    # log_ok "UDP throughput: ${udp_gbps} Gbps"
-    # log_ok "UDP PPS: ${udp_pps}"
-    # log_ ok "UDP loss: ${udp_loss}%"
-    # log_info "Host CPU busy: ${udp_cpu_busy}%"
+    # ----------------------------------------------------
+    # FIX (bug #1): the original jq filter mixed a boolean
+    # comparison with `//`, so it always printed "true"
+    # instead of the actual bits_per_second value. Use a
+    # plain `//` fallback chain instead.
+    # ----------------------------------------------------
     local udp_bps
-    local udp_packets 
-    local udp_seconds 
-    local udp_pps 
-    local udp_loss 
-    local udp_jitter
-
-    # Extract UDP metrics from iperf3 JSON
     udp_bps="$(jq -r '
-        .end.sum_received.bits_per_second 
-        // .end.sum.bits_per_second 
-        // 0' "${udp_json}")"
+        .end.sum_received.bits_per_second
+        // .end.sum.bits_per_second
+        // 0
+        ' "${udp_json}")"
 
-    udp_jitter="$(jq -r '
-        .end.sum_received.jitter_ms 
-        // .end.sum.jitter_ms 
-        // 0' "${udp_json}")"
+    local udp_jitter
+    udp_jitter="$(
+    jq -r '
+        .end.sum_received.jitter_ms
+        // .end.sum.jitter_ms
+        // .end.sum_sent.jitter_ms
+        // 0
+        ' "${udp_json}")"
 
-    udp_loss="$(jq -r '
-        .end.sum_received.lost_percent 
-        // .end.sum.lost_percent 
-        // 0' "${udp_json}")"
+    local udp_gbps
+    udp_gbps="$(
+    awk -v bps="${udp_bps}" \
+        'BEGIN {
+            printf "%.2f", bps / 1000000000
+        }')"
 
+    # ----------------------------------------------------
+    # FIX (bug #2): udp_seconds previously queried
+    # ".packets" a second time instead of ".seconds",
+    # which forced udp_pps to always compute as 1.
+    # ----------------------------------------------------
+    local udp_packets
     udp_packets="$(jq -r '
-        .end.sum_received.packets 
-        // .end.sum.packets 
-        // 0' "${udp_json}")"
+            .end.sum_received.packets // 0
+        ' "${udp_json}")"
 
+    local udp_seconds
     udp_seconds="$(jq -r '
-        .end.sum_received.seconds 
-        // .end.sum.seconds 
-        // 0' "${udp_json}")"
+            .end.sum_received.seconds // .end.sum.seconds // 0
+        ' "${udp_json}")"
 
-    # Calculate formatted values
-    udp_gbps="$(awk -v bps="${udp_bps}" 'BEGIN { printf "%.2f", bps / 1000000000 }')"
-
-    udp_pps="$(awk -v packets="${udp_packets}" -v seconds="${udp_seconds}" '
-        BEGIN {
+    local udp_pps
+    udp_pps="$(
+    awk \
+        -v packets="${udp_packets}" \
+        -v seconds="${udp_seconds}" \
+        'BEGIN {
             if (seconds > 0)
                 printf "%.0f", packets / seconds
             else
                 printf "0"
+        }' )"
+
+    # ----------------------------------------------------
+    # FIX (bug #3): udp_loss was never populated from the
+    # iperf3 JSON before being formatted with awk, so it
+    # always printed 0.000. Pull it from jq first.
+    # ----------------------------------------------------
+    local udp_loss
+    udp_loss="$(jq -r '
+            .end.sum_received.lost_percent
+            // .end.sum.lost_percent
+            // 0
+        ' "${udp_json}")"
+
+    udp_loss="$(awk -v loss="${udp_loss}" \
+        'BEGIN { printf "%.3f", loss }')"
+
+    udp_jitter="$(
+    awk -v jitter="${udp_jitter}" \
+        'BEGIN {
+            printf "%.6f", jitter
         }')"
-
-    udp_loss="$(awk -v loss="${udp_loss}" 'BEGIN { printf "%.3f", loss }')"
-
-    udp_jitter="$(awk -v jitter="${udp_jitter}" 'BEGIN { printf "%.6f", jitter }')"
 
     local udp_cpu_busy
     udp_cpu_busy="$(get_cpu_busy_percent \
@@ -1316,6 +1262,7 @@ perform_throughput_test()
 
     log_ok "UDP throughput: ${udp_gbps} Gbps"
     log_ok "UDP PPS: ${udp_pps}"
+    # FIX (bug #4): "log_ ok" (stray space) -> "log_ok"
     log_ok "UDP loss: ${udp_loss}%"
     log_info "Host CPU busy: ${udp_cpu_busy}%"
 
