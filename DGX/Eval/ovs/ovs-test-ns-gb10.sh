@@ -63,11 +63,29 @@ RIGHT_IP="10.0.0.2"
 PREFIX="24"
 
 # Ping parameters
-PING_COUNT=10
+PING_COUNT=3
 PING_TIMEOUT=1
 
 # Persistent state flag
 STATE_FILE="/run/ovs-dac-topology.state"
+
+# results:
+RESULTS_DIR="results"
+
+# Iperf duration:
+IPERF_DURATION=10
+
+# Iperf tcp streams
+IPERF_TCP_STREAMS=4
+
+# Iperf udp streams
+IPERF_UDP_STREAMS=1
+
+# Iperf upper bandwidth:
+IPERF_UDP_BANDWIDTH="40G"
+
+# Iperf UDP pks stize:
+IPERF_UDP_LENGTH=1470
 
 # ============================================================
 # Colors
@@ -345,6 +363,7 @@ create_veth_pair()
     ip link set "${ns_side}" netns "${ns}"
 
     # Bring OVS side up
+    ip link set "${ovs_side}" mtu 9000
     ip link set "${ovs_side}" up
 
     # Bring namespace side up
@@ -1522,7 +1541,7 @@ setup()
 {
     # set cx eswitch to switchdev mode TODO: replace PCI to probe pci-address 
     devlink dev eswitch set pci/0000:01:00.0 mode switchdev
-    devlink dev eswitch set pci/0000:01:00.1 mode switchdev
+    devlink dev eswitch set pci/0002:01:00.1 mode switchdev
 
     # Enable HW offloading of OpenVswitch
     ovs-vsctl set Open_vSwitch . other_config:hw-offload=true
