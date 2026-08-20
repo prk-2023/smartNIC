@@ -1655,6 +1655,8 @@ show_menu()
 main()
 {
     require_root
+    nmcli device set "${LEFT_IF}" managed no
+    nmcli device set "${RIGHT_IF}" managed no
     check_dependencies
 
     while true; do

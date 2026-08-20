@@ -389,6 +389,8 @@ create_bridge()
 
     sudo ovs-vsctl --no-wait --may-exist add-br "${bridge}"
 
+    sleep 1
+    sudo ip link set "${bridge}" mtu 9000
     sudo ip link set "${bridge}" up
 
     log_ok "Created ${bridge}"
@@ -398,16 +400,11 @@ create_bridge_new()
 {
     log_info "Creating OVS bridges:"
 
-    echo "-"
     ovs-vsctl --no-wait --may-exist add-br  br-left
-    echo "--"
     ip link set br-left up
-    echo "---"
     sleep 1
     ovs-vsctl --no-wait --may-exist add-br  br-right
-    echo "----"
     ip link set br-right up
-    echo "-----"
     sleep 1
 
     log_ok "Created : br-left and br-right"
@@ -511,6 +508,52 @@ verify_namespaces()
     return "${failed}"
 }
 
+verify_mtu()
+{
+    local failed=0
+
+    echo
+    echo "------------------------------------------------------------"
+    echo " MTU Verification"
+    echo "------------------------------------------------------------"
+
+    local interfaces=(
+        "${LEFT_IF}"
+        "${RIGHT_IF}"
+    )
+
+    for interface in "${interfaces[@]}"; do
+        local mtu
+        mtu=$(ip link show "${interface}" |
+              awk '/mtu/ {for(i=1;i<=NF;i++) if($i=="mtu") print $(i+1)}')
+
+        if [[ "${mtu}" == "9000" ]]; then
+            log_ok "${interface}: MTU ${mtu}"
+        else
+            log_error "${interface}: MTU ${mtu}, expected 9000"
+            failed=1
+        fi
+    done
+
+    for interface in \
+        "${LEFT_VETH_OVS}" \
+        "${RIGHT_VETH_OVS}"; do
+
+        local mtu
+        mtu=$(ip link show "${interface}" |
+              awk '/mtu/ {for(i=1;i<=NF;i++) if($i=="mtu") print $(i+1)}')
+
+        if [[ "${mtu}" == "9000" ]]; then
+            log_ok "${interface}: MTU ${mtu}"
+        else
+            log_error "${interface}: MTU ${mtu}, expected 9000"
+            failed=1
+        fi
+    done
+
+    return "${failed}"
+}
+
 # ============================================================
 # Verify OVS topology
 # ============================================================
@@ -608,6 +651,7 @@ verify_topology()
     echo "============================================================"
 
     verify_physical_interfaces || failed=1
+    verify_mtu || failed=1
     verify_namespaces || failed=1
     verify_ovs_topology || failed=1
 
@@ -694,19 +738,24 @@ create_topology()
     ip link set "${LEFT_IF}" down
     ip link set "${RIGHT_IF}" down
 
+    # --- jumbo frame setup 
+    ip link set dev "${LEFT_IF}" mtu 9000
+    ip link set dev "${RIGHT_IF}" mtu 9000
     # --------------------------------------------------------
     # Create OVS bridges
     # --------------------------------------------------------
 
     #systemctl enable --now openvswitch-switch > /dev/null
     #systemctl is-active --quiet openvswitch-switch \
-#	    && echo "  OK: openvswitch-switch is Active" \
-	#    || {echo "  ERROR: openvswitch-switch is not active - check \'systemctl status openvswitch-switch\'"; exit 1;}
+    #	 && echo "  OK: openvswitch-switch is Active" \
+    #    || {echo "  ERROR: openvswitch-switch is not active - check \'systemctl status openvswitch-switch\'"; exit 1;}
 
     create_bridge "${LEFT_BR}"
     #sleep 3
     create_bridge "${RIGHT_BR}"
     #create_bridge_new
+    ip link set dev ${LEFT_BR} mtu 9000
+    ip link set dev ${RIGHT_BR} mtu 9000
 
     # --------------------------------------------------------
     # Add physical NICs to OVS
@@ -736,6 +785,14 @@ create_topology()
         "${RIGHT_VETH_NS}" \
         "${RIGHT_NS}"
 
+    ip link set dev "${LEFT_VETH_OVS}  mtu 9000
+
+    ip link set dev "${RIGHT_VETH_OVS}  mtu 9000
+
+    ip netns exec "${LEFT_NS}" ip link set dev "${LEFT_VETH_NS}" mtu 9000
+
+    ip netns exec "${RIGHT_NS}" ip link set dev "${RIGHT_VETH_NS}" mtu 9000
+   
     # --------------------------------------------------------
     # Add veth root sides to OVS
     # --------------------------------------------------------
@@ -859,6 +916,466 @@ perform_ping_test()
 
     log_error "BIDIRECTIONAL PING TEST FAILED"
     return 1
+}
+
+# ============================================================
+# Throughput test helpers
+# ============================================================
+
+get_ping_rtt_ms()
+{
+    local source_ns="$1"
+    local destination_ip="$2"
+
+    ip netns exec "${source_ns}" \
+        ping \
+            -c 5 \
+            -W 1 \
+            "${destination_ip}" 2>/dev/null |
+        awk -F'/' '/^rtt|^round-trip/ {
+            print $5
+            exit
+        }'
+}
+
+# ============================================================
+# Run iperf3 server
+# ============================================================
+
+start_iperf_server()
+{
+    log_info "Starting iperf3 server in ${RIGHT_NS}"
+
+    ip netns exec "${RIGHT_NS}" \
+        iperf3 -s > /tmp/iperf3-server.log 2>&1 &
+
+    IPERF_SERVER_PID=$!
+
+    sleep 1
+
+    if ! kill -0 "${IPERF_SERVER_PID}" 2>/dev/null; then
+        log_error "Failed to start iperf3 server"
+        cat /tmp/iperf3-server.log
+        return 1
+    fi
+
+    log_ok "iperf3 server started"
+
+    return 0
+}
+
+# ============================================================
+# Stop iperf3 server
+# ============================================================
+
+stop_iperf_server()
+{
+    if [[ -n "${IPERF_SERVER_PID:-}" ]]; then
+        kill "${IPERF_SERVER_PID}" 2>/dev/null || true
+        wait "${IPERF_SERVER_PID}" 2>/dev/null || true
+        unset IPERF_SERVER_PID
+    fi
+
+    # Make sure no stale server remains inside the namespace.
+    ip netns exec "${RIGHT_NS}" \
+        pkill -x iperf3 2>/dev/null || true
+}
+
+# ============================================================
+# Read host CPU usage
+#
+# This is a simple /proc/stat based measurement.
+# It is intentionally not treated as PMD utilization.
+# ============================================================
+
+read_cpu_stat()
+{
+    awk '/^cpu / {
+        total=$2+$3+$4+$5+$6+$7+$8+$9
+        idle=$5+$6
+        print total, idle
+        exit
+    }' /proc/stat
+}
+
+get_cpu_busy_percent()
+{
+    local start_total="$1"
+    local start_idle="$2"
+    local end_total="$3"
+    local end_idle="$4"
+
+    local total_delta=$((end_total - start_total))
+    local idle_delta=$((end_idle - start_idle))
+
+    if [[ "${total_delta}" -le 0 ]]; then
+        echo "0.00"
+        return
+    fi
+
+    awk \
+        -v total="${total_delta}" \
+        -v idle="${idle_delta}" \
+        'BEGIN {
+            printf "%.2f", ((total-idle)/total)*100
+        }'
+}
+
+# ============================================================
+# Throughput test
+#
+# Runs:
+#   1. ICMP RTT
+#   2. TCP throughput
+#   3. UDP throughput / PPS / loss
+#
+# All traffic originates in left-ns and terminates in right-ns.
+# Therefore traffic must traverse:
+#
+# left-ns
+#   -> br-left
+#   -> physical NIC
+#   -> DAC
+#   -> physical NIC
+#   -> br-right
+#   -> right-ns
+#
+# ============================================================
+
+perform_throughput_test()
+{
+    if ! require_setup; then
+        return 1
+    fi
+
+    echo
+    echo "============================================================"
+    echo " Bare-Metal OVS Throughput Test"
+    echo "============================================================"
+    echo
+    echo "Path:"
+    echo
+    echo " ${LEFT_NS}"
+    echo "    |"
+    echo " ${LEFT_BR}"
+    echo "    |"
+    echo " ${LEFT_IF}"
+    echo "    |"
+    echo "   DAC"
+    echo "    |"
+    echo " ${RIGHT_IF}"
+    echo "    |"
+    echo " ${RIGHT_BR}"
+    echo "    |"
+    echo " ${RIGHT_NS}"
+    echo
+    echo "This test does NOT use the VM/vhost-user path."
+    echo
+
+    mkdir -p "${RESULTS_DIR}"
+
+    local timestamp
+    timestamp="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+
+    local timestamp_file
+    timestamp_file="$(date '+%Y%m%d-%H%M%S')"
+
+    local test_dir="${RESULTS_DIR}/ovs-baremetal-${timestamp_file}"
+
+    mkdir -p "${test_dir}"
+
+    local tcp_json="${test_dir}/tcp.json"
+    local udp_json="${test_dir}/udp.json"
+
+    # --------------------------------------------------------
+    # Verify connectivity
+    # --------------------------------------------------------
+
+    log_info "Checking connectivity before throughput test..."
+
+    if ! ip netns exec "${LEFT_NS}" \
+        ping -c 3 -W 1 "${RIGHT_IP}" >/dev/null 2>&1; then
+
+        log_error "Connectivity test failed."
+        return 1
+    fi
+
+    log_ok "Connectivity test passed"
+
+    # --------------------------------------------------------
+    # ICMP RTT
+    # --------------------------------------------------------
+
+    log_info "Measuring ICMP RTT..."
+
+    local rtt_ms
+    rtt_ms="$(get_ping_rtt_ms "${LEFT_NS}" "${RIGHT_IP}")"
+
+    if [[ -z "${rtt_ms}" ]]; then
+        rtt_ms="0"
+        log_warn "Could not determine RTT"
+    else
+        log_ok "ICMP RTT: ${rtt_ms} ms"
+    fi
+
+    # --------------------------------------------------------
+    # Start iperf3 server
+    # --------------------------------------------------------
+
+    if ! start_iperf_server; then
+        return 1
+    fi
+
+    trap stop_iperf_server RETURN
+
+    # --------------------------------------------------------
+    # TCP test
+    # --------------------------------------------------------
+
+    echo
+    echo "------------------------------------------------------------"
+    echo " TCP throughput"
+    echo "------------------------------------------------------------"
+    echo
+    echo "Duration       : ${IPERF_DURATION}s"
+    echo "TCP streams    : ${IPERF_TCP_STREAMS}"
+    echo
+
+    read -r tcp_start_total tcp_start_idle <<< "$(read_cpu_stat)"
+
+    ip netns exec "${LEFT_NS}" \
+        iperf3 \
+            -c "${RIGHT_IP}" \
+            -t "${IPERF_DURATION}" \
+            -P "${IPERF_TCP_STREAMS}" \
+            -J \
+            > "${tcp_json}"
+
+    local tcp_result=$?
+
+    read -r tcp_end_total tcp_end_idle <<< "$(read_cpu_stat)"
+
+    if [[ "${tcp_result}" -ne 0 ]]; then
+        log_error "TCP iperf3 test failed"
+        cat "${tcp_json}"
+        return 1
+    fi
+
+    local tcp_bps
+    tcp_bps="$(jq -r '
+        if .end.sum_received.bits_per_second != null
+        then .end.sum_received.bits_per_second
+        else .end.sum_sent.bits_per_second
+        end
+    ' "${tcp_json}")"
+
+    local tcp_gbps
+    tcp_gbps="$(awk -v bps="${tcp_bps}" \
+        'BEGIN { printf "%.2f", bps/1000000000 }')"
+
+    local tcp_cpu_busy
+    tcp_cpu_busy="$(get_cpu_busy_percent \
+        "${tcp_start_total}" \
+        "${tcp_start_idle}" \
+        "${tcp_end_total}" \
+        "${tcp_end_idle}")"
+
+    log_ok "TCP throughput: ${tcp_gbps} Gbps"
+    log_info "Host CPU busy: ${tcp_cpu_busy}%"
+
+    # --------------------------------------------------------
+    # UDP test
+    # --------------------------------------------------------
+
+    echo
+    echo "------------------------------------------------------------"
+    echo " UDP throughput"
+    echo "------------------------------------------------------------"
+    echo
+    echo "Duration       : ${IPERF_DURATION}s"
+    echo "UDP bandwidth  : ${IPERF_UDP_BANDWIDTH}"
+    echo "Packet length  : ${IPERF_UDP_LENGTH}"
+    echo "UDP streams    : ${IPERF_UDP_STREAMS}"
+    echo
+
+    read -r udp_start_total udp_start_idle <<< "$(read_cpu_stat)"
+
+    local udp_bandwidth_args=()
+
+    if [[ "${IPERF_UDP_BANDWIDTH}" != "0" ]]; then
+        udp_bandwidth_args=(-b "${IPERF_UDP_BANDWIDTH}")
+    fi
+
+    ip netns exec "${LEFT_NS}" \
+        iperf3 \
+            -c "${RIGHT_IP}" \
+            -u \
+            -t "${IPERF_DURATION}" \
+            -l "${IPERF_UDP_LENGTH}" \
+            -P "${IPERF_UDP_STREAMS}" \
+            "${udp_bandwidth_args[@]}" \
+            -J \
+            > "${udp_json}"
+
+    local udp_result=$?
+
+    read -r udp_end_total udp_end_idle <<< "$(read_cpu_stat)"
+
+    if [[ "${udp_result}" -ne 0 ]]; then
+        log_error "UDP iperf3 test failed"
+        cat "${udp_json}"
+        return 1
+    fi
+
+    # ----------------------------------------------------
+    # FIX (bug #1): the original jq filter mixed a boolean
+    # comparison with `//`, so it always printed "true"
+    # instead of the actual bits_per_second value. Use a
+    # plain `//` fallback chain instead.
+    # ----------------------------------------------------
+    local udp_bps
+    udp_bps="$(jq -r '
+        .end.sum_received.bits_per_second
+        // .end.sum.bits_per_second
+        // 0
+        ' "${udp_json}")"
+
+    local udp_jitter
+    udp_jitter="$(
+    jq -r '
+        .end.sum_received.jitter_ms
+        // .end.sum.jitter_ms
+        // .end.sum_sent.jitter_ms
+        // 0
+        ' "${udp_json}")"
+
+    local udp_gbps
+    udp_gbps="$(
+    awk -v bps="${udp_bps}" \
+        'BEGIN {
+            printf "%.2f", bps / 1000000000
+        }')"
+
+    # ----------------------------------------------------
+    # FIX (bug #2): udp_seconds previously queried
+    # ".packets" a second time instead of ".seconds",
+    # which forced udp_pps to always compute as 1.
+    # ----------------------------------------------------
+    local udp_packets
+    udp_packets="$(jq -r '
+            .end.sum_received.packets // 0
+        ' "${udp_json}")"
+
+    local udp_seconds
+    udp_seconds="$(jq -r '
+            .end.sum_received.seconds // .end.sum.seconds // 0
+        ' "${udp_json}")"
+
+    local udp_pps
+    udp_pps="$(
+    awk \
+        -v packets="${udp_packets}" \
+        -v seconds="${udp_seconds}" \
+        'BEGIN {
+            if (seconds > 0)
+                printf "%.0f", packets / seconds
+            else
+                printf "0"
+        }' )"
+
+    # ----------------------------------------------------
+    # FIX (bug #3): udp_loss was never populated from the
+    # iperf3 JSON before being formatted with awk, so it
+    # always printed 0.000. Pull it from jq first.
+    # ----------------------------------------------------
+    local udp_loss
+    udp_loss="$(jq -r '
+            .end.sum_received.lost_percent
+            // .end.sum.lost_percent
+            // 0
+        ' "${udp_json}")"
+
+    udp_loss="$(awk -v loss="${udp_loss}" \
+        'BEGIN { printf "%.3f", loss }')"
+
+    udp_jitter="$(
+    awk -v jitter="${udp_jitter}" \
+        'BEGIN {
+            printf "%.6f", jitter
+        }')"
+
+    local udp_cpu_busy
+    udp_cpu_busy="$(get_cpu_busy_percent \
+         "${udp_start_total}" \
+        "${udp_start_idle}" \
+        "${udp_end_total}" \
+        "${udp_end_idle}")"
+
+    log_ok "UDP throughput: ${udp_gbps} Gbps"
+    log_ok "UDP PPS: ${udp_pps}"
+    # FIX (bug #4): "log_ ok" (stray space) -> "log_ok"
+    log_ok "UDP loss: ${udp_loss}%"
+    log_info "Host CPU busy: ${udp_cpu_busy}%"
+
+    # --------------------------------------------------------
+    # Generate summary.json
+    # --------------------------------------------------------
+
+    cat > "${SUMMARY_FILE}" <<EOF
+{
+  "test_type": "baremetal_ovs",
+  "timestamp": "${timestamp}",
+  "left_interface": "${LEFT_IF}",
+  "right_interface": "${RIGHT_IF}",
+  "left_namespace": "${LEFT_NS}",
+  "right_namespace": "${RIGHT_NS}",
+  "ovs_left_bridge": "${LEFT_BR}",
+  "ovs_right_bridge": "${RIGHT_BR}",
+  "tcp_throughput_gbps": ${tcp_gbps},
+  "udp_jitter_ms": ${udp_jitter},
+  "udp_throughput_gbps": ${udp_gbps},
+  "udp_pps": ${udp_pps},
+  "udp_lost_percent": ${udp_loss},
+  "icmp_rtt_ms": ${rtt_ms},
+  "tcp_latency": "${rtt_ms} ms",
+  "udp_latency": "${rtt_ms} ms",
+  "host_cpu_busy_pct": ${tcp_cpu_busy},
+  "tcp_parallel_streams": ${IPERF_TCP_STREAMS},
+  "udp_packet_length": ${IPERF_UDP_LENGTH},
+  "udp_streams": ${IPERF_UDP_STREAMS},
+  "iperf3_duration_sec": ${IPERF_DURATION},
+  "raw_tcp_result": "${tcp_json}",
+  "raw_udp_result": "${udp_json}",
+  "note": "host_cpu_busy_pct is aggregate host CPU utilization during the TCP test. Use ovs-appctl dpif-netdev/pmd-stats-show for OVS-DPDK PMD statistics when comparing against OVS-DPDK."
+}
+EOF
+
+    echo
+    echo "============================================================"
+    echo " Throughput Test Results"
+    echo "============================================================"
+    echo
+    printf " TCP throughput : %s Gbps\n" "${tcp_gbps}"
+    printf " UDP throughput : %s Gbps\n" "${udp_gbps}"
+    printf " UDP PPS        : %s\n" "${udp_pps}"
+    printf " UDP loss       : %s %%\n" "${udp_loss}"
+    printf " ICMP RTT       : %s ms\n" "${rtt_ms}"
+    printf " Host CPU busy  : %s %%\n" "${tcp_cpu_busy}"
+    echo
+    echo "Raw TCP result:"
+    echo "  ${tcp_json}"
+    echo
+    echo "Raw UDP result:"
+    echo "  ${udp_json}"
+    echo
+    echo "Summary:"
+    echo "  ${SUMMARY_FILE}"
+    echo
+    echo "============================================================"
+
+    log_ok "Bare-metal OVS throughput test completed"
+
+    return 0
 }
 
 # ============================================================
@@ -1003,6 +1520,14 @@ reset_host_and_quit()
 
 setup()
 {
+    # set cx eswitch to switchdev mode TODO: replace PCI to probe pci-address 
+    devlink dev eswitch set pci/0000:01:00.0 mode switchdev
+    devlink dev eswitch set pci/0000:01:00.1 mode switchdev
+
+    # Enable HW offloading of OpenVswitch
+    ovs-vsctl set Open_vSwitch . other_config:hw-offload=true
+    systemctl restart openvswitch
+
     create_topology
 }
 
@@ -1048,18 +1573,20 @@ show_menu()
     echo "  3) Ping test"
     echo "     LEFT -> RIGHT and RIGHT -> LEFT"
     echo
-    echo "  4) Reset host and quit"
-    echo "     Remove topology and restore interface management"
-    echo
-    echo "  5) Quit"
-    echo "     Leave topology running for manual testing"
-    echo
-    echo "  6) Show OVS flows"
-    echo
-    echo "  7) Show OVS MAC tables"
-    echo
-    echo "  8) Show configuration"
-    echo
+    echo "  4) Bare-metal OVS throughput" 
+    echo "     TCP/UDP iperf3 test through physical DAC"
+    echo 
+    echo "  5) Reset host and quit" 
+    echo "     Remove topology and restore interface management" 
+    echo 
+    echo "  6) Quit" 
+    echo "     Leave topology running for manual testing" 
+    echo 
+    echo "  7) Show OVS flows" 
+    echo 
+    echo "  8) Show OVS MAC tables" 
+    echo 
+    echo "  9) Show configuration"
     echo "============================================================"
 }
 
@@ -1078,7 +1605,7 @@ main()
 
         show_menu
 
-        read -r -p "Select an option [1-8]: " choice
+        read -r -p "Select an option [1-9]: " choice
 
         case "${choice}" in
 
@@ -1098,27 +1625,32 @@ main()
                 ;;
 
             4)
-                reset_host_and_quit
+                perform_throughput_test
+                pause_screen
                 ;;
 
             5)
+                reset_host_and_quit
+                ;;
+
+            6)
                 echo
                 log_info "Leaving topology untouched."
                 echo
                 exit 0
                 ;;
 
-            6)
+            7)
                 show_flows
                 pause_screen
                 ;;
 
-            7)
+            8)
                 show_mac_tables
                 pause_screen
                 ;;
 
-            8)
+            9)
                 show_configuration
                 pause_screen
                 ;;
