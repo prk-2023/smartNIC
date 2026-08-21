@@ -63,9 +63,72 @@ embedded directly on the silicon.
     - Control: Creates VF Representors (r0) in the host namespace to represent VF control channels.
     - Offloading: Full offload—bridges like Open vSwitch or `tc flower` program steering rules 
       directly into the NIC ASIC for zero-CPU, wire-speed packet forwarding.
-      
 
-## 2. Legacy SR-IOV Mode
+      
+- `mlx5_core` is the low-level kernel driver that acts as the bridge between host sw and CX ASIC HW. 
+   Its main roles in eSwitch management include:
+   * Hardware Controller: Translates high-level host commands (like `devlink`, `tc flower`, or 
+       `ovs-vsctl`) into low-level firmware instructions to program the ASIC's Hardware Steering Tables.
+   * Mode Switcher: Orchestrates changing the eSwitch state between Legacy and Switchdev modes on the 
+     physical device.
+   * Representor Manager: Creates, destroys, and manages the lifecycle of VF Representor interfaces
+     (`r0`) in the host kernel when Switchdev mode is enabled.
+   * Slow-Path / Exception Handler: Handles "miss" packets (traffic without an existing hardware flow
+     rule) by passing them from the ASIC up to the host kernel CPU, then installing the newly learned
+     hardware rule back onto the NIC.
+     
+##  `mlx5_core` arch:
+
+Mastering `mlx5_core` requires breaking it down into its layered architecture, key features, and 
+core methods for interacting with the underlying NVIDIA ASIC hardware.
+
+### Architectural Layers 
+
+* PCI and Firmware Layer:
+    Interfaces directly with the ConnectX PCIe endpoints, managing command queues (CMDQ), event queues,
+    and communication with the embedded Mellanox Firmware (FW).
+    
+* Core Subsystem (`mlx5_core`):
+    Acts as the central orchestrator that registers the device with the Linux kernel and spawns
+    specialized sub-drivers.
+
+* Functional Modules (The Sub-drivers):
+    * `mlx5_en` (Ethernet): Handles standard netdevice registration, MTU configuration, RX/TX ring
+      buffers, and general packet paths.
+    * `mlx5_ib` (InfiniBand / RoCE): Manages Remote Direct Memory Access (RDMA), Verbs API, and Queue
+      Pairs (QPs) for high-speed clustering.
+    * `mlx5_eswitch` (Embedded Switch): Controls internal ASIC routing, port multiplexing, and hardware
+      steering logic.
+
+### Core Features
+
+* Hardware Steering (Axon / ASIC Match-Action):
+    Programmatically constructs flow tables directly in silicon to filter, modify, or redirect packets
+    without CPU overhead.
+    
+* SR-IOV and Multi-Host Virtualization:
+    Allocates Virtual Functions and manages dynamic PF/VF topology mapping.
+    
+* Hardware Offloading Engine:
+    Offloads Linux Traffic Control (`tc flower`), Open vSwitch (OVS), IPsec encryption, and connection 
+    tracking (`conntrack`) directly to the ASIC.
+
+### Key Control & Management Methods
+
+* `devlink` API:
+    The primary tool used via `mlx5_core` to configure global device parameters, such as switching 
+    between **legacy** and **switchdev** eSwitch modes.
+
+* `ethtool` (`ethtool -K ... hw-tc-offload on`):
+    Enables or disables the driver's capability to push software packet filters down into the hardware
+    data path.
+    
+* PCI Bus Bind / Unbind (`/sys/bus/pci/drivers/mlx5_core/`):
+    Manages the lifecycle of physical and virtual functions, allowing dynamic re-configuration of device 
+    drivers without reloading the entire kernel module.
+    
+    
+## 3. Legacy SR-IOV Mode
 
 In Legacy Mode, the eSwitch operates as a simple, unconfigurable hardware MAC-learning switch 
 or strict VLAN multiplexer.
@@ -107,7 +170,7 @@ or strict VLAN multiplexer.
   locally unless explicitly mirroring the port.
   
   
-## 3. Switchdev SR-IOV Mode
+## 4. Switchdev SR-IOV Mode
 
 In Switchdev Mode, the eSwitch is unlocked into an open, fully programmable packet-processing pipeline.
 
@@ -156,7 +219,7 @@ in the host root namespace for every allocated VF.
   representors (r0) to program steering rules directly into the hardware eSwitch.
   
 
-## 4. Legacy vs. Switchdev Comparison
+## 5. Legacy vs. Switchdev Comparison
 
 | Feature | Legacy Mode | Switchdev Mode |
 | :--- | :--- | :--- |
@@ -167,7 +230,7 @@ in the host root namespace for every allocated VF.
 | CPU Overhead | Zero (if simple forwarding) | Zero (after initial flow rule lookup) |
 | Primary Use Case | Basic VM static network access | "Cloud, Telco (OpenStack, Kubernetes Kube-OVN), SmartNIC offload"|
 
-## 5. Mode Switch Commands
+## 6. Mode Switch Commands
 
 - Check Current Mode 
 ```bash
