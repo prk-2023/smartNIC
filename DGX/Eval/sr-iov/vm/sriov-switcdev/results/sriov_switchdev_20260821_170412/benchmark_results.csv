@@ -1,0 +1,15 @@
+Metric,Value,Unit,Description
+MTU_Setting,9000,bytes,Configured Interface MTU
+ICMP_Latency_Min,mdev = 0.033,ms,Minimum ICMP Round-Trip Time (8972B Payload)
+ICMP_Latency_Avg,2.278,ms,Average ICMP Round-Trip Time (8972B Payload)
+ICMP_Latency_Max,44.868,ms,Maximum ICMP Round-Trip Time (8972B Payload)
+ICMP_Packet_Loss,0,%,Packet Loss Percentage
+qperf_TCP_Latency,10.9,us,qperf TCP One-Way/Round-Trip Latency
+qperf_UDP_Latency,10.9,us,qperf UDP One-Way/Round-Trip Latency
+TCP_Throughput_1P,39.13,Gbps,Single-Stream TCP Throughput
+TCP_Retransmits_1P,0,count,Single-Stream TCP Retransmissions
+TCP_Throughput_8P,93.54,Gbps,8-Parallel Stream TCP Throughput
+TCP_Retransmits_8P,2133,count,8-Parallel Stream TCP Retransmissions
+UDP_Throughput,56.47,Gbps,Unthrottled UDP Throughput
+UDP_Jitter,0.002,ms,UDP Jitter
+UDP_Packet_Loss,40.22,%,UDP Packet Loss Percentage

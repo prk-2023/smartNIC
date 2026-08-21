@@ -1,0 +1,14 @@
+Metric,Value,Unit,Description
+ICMP_Latency_Min,mdev = 0.028,ms,Minimum ICMP Round-Trip Time
+ICMP_Latency_Avg,0.059,ms,Average ICMP Round-Trip Time
+ICMP_Latency_Max,0.213,ms,Maximum ICMP Round-Trip Time
+ICMP_Packet_Loss,0,%,Packet Loss Percentage
+qperf_TCP_Latency,10,us,qperf TCP One-Way/Round-Trip Latency
+qperf_UDP_Latency,10.2,us,qperf UDP One-Way/Round-Trip Latency
+TCP_Throughput_1P,29.54,Gbps,Single-Stream TCP Throughput
+TCP_Retransmits_1P,0,count,Single-Stream TCP Retransmissions
+TCP_Throughput_8P,70.19,Gbps,8-Parallel Stream TCP Throughput
+TCP_Retransmits_8P,10423,count,8-Parallel Stream TCP Retransmissions
+UDP_Throughput,8.27,Gbps,Unthrottled UDP Throughput
+UDP_Jitter,0.004,ms,UDP Jitter
+UDP_Packet_Loss,0.04,%,UDP Packet Loss Percentage

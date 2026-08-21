@@ -1,0 +1,21 @@
+{
+  "timestamp": "20260821_162250",
+  "mode": "SR-IOV Legacy Mode (vfio-pci)",
+  "host": {
+    "cpu": "Cortex-X925
+Cortex-A725",
+    "kernel": "6.11.0-1014-nvidia",
+    "pf0": "enp1s0f0np0",
+    "pf1": "enP2p1s0f1np1"
+  },
+  "vm1": {
+    "ip": "192.168.100.11",
+    "mac": "52:54:00:9a:00:01",
+    "pci_device": "00:02.0 Ethernet controller: Mellanox Technologies ConnectX Family mlx5Gen Virtual Function",
+    "driver": "mlx5_core"
+  },
+  "vm2": {
+    "ip": "192.168.100.12",
+    "mac": "52:54:00:9a:00:02"
+  }
+}
