@@ -3,7 +3,8 @@
 
 ### ---- Physical Topology ----
 PF0="enp1s0f0np0"
-PF1="enp1s0f1np1"
+# PF1="enp1s0f1np1"
+PF1="enP2p1s0f1np1"
 
 ### ---- Network & Frame Settings ----
 VF_NUM=0      # Index of VF passed to each guest VM

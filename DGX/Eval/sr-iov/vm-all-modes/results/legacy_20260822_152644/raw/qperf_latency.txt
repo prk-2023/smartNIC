@@ -1,4 +1,0 @@
-tcp_lat:
-    latency  =  62.9 us
-udp_lat:
-    latency  =  16.5 us
