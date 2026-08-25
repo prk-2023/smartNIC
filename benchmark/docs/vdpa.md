@@ -454,3 +454,86 @@ ConnectX
 ```
 
 Note: Same ConnectX hardware and underlying mlx5 infrastructure can support multiple interfaces/use cases.
+
+## key distinction with SR-IOV
+
+With SR-IOV, the VM is typically given a PCI Virtual Function (VF) directly:
+```
+VM
+ │
+ │ PCI device
+ ▼
+VF
+ │
+ ▼
+ConnectX
+```
+
+Because the VF is being assigned as a PCI device to the VM, you commonly have a userspace/hypervisor
+device-assignment path involving VFIO:
+
+```
+VM
+ │
+ └── VF
+      │
+   VFIO / IOMMU
+      │
+   PCIe device
+      │
+   ConnectX
+```
+
+The guest sees the actual NIC VF and needs an appropriate NIC driver.
+With vDPA, the VM doesn't get a ConnectX VF as a PCI device.
+
+Instead:
+```
+VM
+ │
+ └── virtio-net
+       │
+    virtqueue
+       │
+    vDPA
+       │
+   mlx5 vDPA
+       │
+   mlx5_core
+       │
+   ConnectX
+```
+
+The guest sees virtio, not a Mellanox VF.
+
+So the fundamental difference is:
+
+| |	SR-IOV | vDPA |
+| :--- | :--- | :--- |
+| What VM sees | PCI VF | Virtio device |
+| Guest driver | NIC/VF driver | virtio-net |
+| HW accel | Yes | Yes |
+| PCI device assignment | Yes | Not necessarily |
+| VFIO | Commonly involved | Not the fundamental mechanism |
+| HW-specific guest dependency  | Higher | Lower |
+| Main abstraction | PCI/SR-IOV | virtio |
+
+
+One subtle but important point
+
+Don't think of it as:
+
+> SR-IOV = VFIO, vDPA = no VFIO
+
+That's a little too simplistic.
+
+The real distinction is:
+
+SR-IOV device assignment exposes a PCI VF to the guest, whereas vDPA exposes a virtio device whose data path
+can be implemented by hardware.
+
+VFIO is the mechanism commonly used to safely assign PCI devices/VFs across the virtualization boundary.
+vDPA doesn't require giving the guest ownership of the physical PCI function.
+
+That's also why vDPA is attractive for DPUs/SmartNICs: the host can retain control of the physical device
+while presenting standardized virtio devices to VMs.
