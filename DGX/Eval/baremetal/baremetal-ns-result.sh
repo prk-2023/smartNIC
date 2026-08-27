@@ -3,15 +3,15 @@
 # ============================================================
 # PURE BARE-METAL (NO OVS) CROSSOVER TEST
 #
-#                         DAC crossover
+#                     DAC crossover
 #                  +-----------------------+
 #                  |                       |
-#            enp1s0f0np0               enp1s0f1np1
-#             +----+-----+           +-----+----+
-#             |  left-ns |           | right-ns |
-#             |          |           |          |
-#             |10.0.0.1  |           |10.0.0.2  |
-#             +----------+           +----------+
+#             enp1s0f0np0              enp1s0f1np1
+#              +----+-----+            +-----+----+
+#              |  left-ns |            | right-ns |
+#              |          |            |          |
+#              |10.0.0.1  |            |10.0.0.2  |
+#              +----------+            +----------+
 #
 # Physical NICs are moved directly into network namespaces.
 # Traffic traverses ONLY the physical DAC and Kernel network stack.
@@ -23,9 +23,19 @@ set -u
 # Configuration
 # ============================================================
 
+## If: NVIDIA's performance tuning utilities is used ( set_irq_affinity.sh script ) Do not use taskset with MASK_S1/MASK_S2
+## $ sudo set_irq_affinity.sh enp1s0f0np0 
+## $ sudo set_irq_affinity.sh enP2p1s0f1np1
+#  Else:
+## use MASK_S1 and MASK_S2 if using taskset for pinning 
+## Do not use MASK_S1 and MASK_S2 if Nvidia 
+MASK_S1="5-9"
+MASK_S2="15-19"
+IRQ_BAN="5,6,7,8,9,15,16,17,18,19"
+
 # Physical NICs
 LEFT_IF="enp1s0f0np0"
-RIGHT_IF="enp1s0f1np1"
+RIGHT_IF="enP2p1s0f1np1"
 
 # Network namespaces
 LEFT_NS="left-ns"
@@ -38,18 +48,19 @@ PREFIX="24"
 MTU_VAL=9000
 
 # Ping parameters
-PING_COUNT=10
+PING_COUNT=3
 PING_TIMEOUT=1
 
 # Persistent state flag
 STATE_FILE="/run/pure-baremetal-topology.state"
 
 # Throughput test configuration
-IPERF_DURATION=10
-IPERF_TCP_STREAMS=4
-IPERF_UDP_BANDWIDTH="50G"
+IPERF_DURATION=30
+IPERF_TCP_STREAMS=10
+#IPERF_UDP_BANDWIDTH="100G"
+IPERF_UDP_BANDWIDTH="0"
 IPERF_UDP_LENGTH=8948
-IPERF_UDP_STREAMS=1
+IPERF_UDP_STREAMS=10
 
 # Output directory
 RESULTS_DIR="./results"
@@ -86,6 +97,7 @@ check_dependencies() {
     command -v ping >/dev/null 2>&1 || missing+=("ping")
     command -v iperf3 >/dev/null 2>&1 || missing+=("iperf3")
     command -v jq >/dev/null 2>&1 || missing+=("jq")
+    command -v sysctl >/dev/null 2>&1 || missing+=("sysctl")
 
     if [[ ${#missing[@]} -gt 0 ]]; then
         log_error "Missing required commands: ${missing[*]}"
@@ -113,6 +125,44 @@ interface_exists_in_ns() {
 
 namespace_exists() {
     ip netns list | awk '{print $1}' | grep -qx "$1"
+}
+
+apply_system_tuning() {
+    log_info "Applying system performance and kernel tunings..."
+
+    # 1. Huge pages configuration (2048 x 2MB = 4GB)
+    log_info "Allocating 2048 hugepages (2MB each)..."
+    echo 2048 > /proc/sys/vm/nr_hugepages
+
+    cpupower frequency-set -g performance
+
+    ethtool -G ${LEFT_IF} rx 8192 tx 8192
+    ethtool -G ${RIGHT_IF} rx 8192 tx 8192
+
+
+    
+    # 2. BBR Congestion Control & Fair Queueing
+    log_info "Enabling BBR congestion control and FQ qdisc..."
+    sysctl -w net.core.default_qdisc="fq" >/dev/null
+    sysctl -w net.ipv4.tcp_congestion_control="bbr" >/dev/null
+
+    # 3. Expanding TCP Windows & Socket Buffers for high-speed paths
+    log_info "Expanding TCP windows and socket buffer limits..."
+    #sysctl -w net.core.rmem_max=67108864 >/dev/null
+    sysctl -w net.core.rmem_max=134217728 >/dev/null
+    #sysctl -w net.core.wmem_max=67108864 >/dev/null
+    sysctl -w net.core.wmem_max=134217728 >/dev/null
+    sysctl -w net.core.rmem_default=33554432 >/dev/null
+    sysctl -w net.core.wmem_default=33554432 >/dev/null
+    #sysctl -w net.ipv4.tcp_rmem="4096 87380 33554432" >/dev/null
+    sysctl -w net.ipv4.tcp_rmem="4096 87380  134217728" >/dev/null
+    #sysctl -w net.ipv4.tcp_wmem="4096 65536 33554432" >/dev/null
+    sysctl -w net.ipv4.tcp_wmem="4096 65536 134217728" >/dev/null
+    sysctl -w net.core.netdev_max_backlog=250000 >/dev/null
+    sudo sync && echo 3 | sudo tee /proc/sys/vm/drop_caches
+
+
+    log_ok "System tuning parameters successfully applied."
 }
 
 reset_topology() {
@@ -156,6 +206,9 @@ create_topology() {
     echo
 
     reset_topology
+
+    # Apply performance tunings before bringing up interfaces and tests
+    apply_system_tuning
 
     if ! ip link show "${LEFT_IF}" >/dev/null 2>&1 || ! ip link show "${RIGHT_IF}" >/dev/null 2>&1; then
         log_error "One or both physical NICs (${LEFT_IF}, ${RIGHT_IF}) not found in host root namespace."
@@ -221,6 +274,7 @@ get_ping_rtt_ms() {
 
 start_iperf_server() {
     log_info "Starting iperf3 server in ${RIGHT_NS}"
+    ##ip netns exec "${RIGHT_NS}" taskset -c ${MASK_S2} iperf3 -s > /tmp/iperf3-server.log 2>&1 &
     ip netns exec "${RIGHT_NS}" iperf3 -s > /tmp/iperf3-server.log 2>&1 &
     IPERF_SERVER_PID=$!
     sleep 1
@@ -303,7 +357,8 @@ perform_throughput_test() {
     echo
 
     read -r tcp_start_total tcp_start_idle <<< "$(read_cpu_stat)"
-    ip netns exec "${LEFT_NS}" iperf3 -c "${RIGHT_IP}" -t "${IPERF_DURATION}" -P "${IPERF_TCP_STREAMS}" -J > "${tcp_json}"
+    #ip netns exec "${LEFT_NS}" taskset -c ${MASK_S1} iperf3 -c "${RIGHT_IP}" -t "${IPERF_DURATION}" -P "${IPERF_TCP_STREAMS}" -Z -J > "${tcp_json}"
+    ip netns exec "${LEFT_NS}" iperf3 -c "${RIGHT_IP}" -t "${IPERF_DURATION}" -P "${IPERF_TCP_STREAMS}" -Z -J > "${tcp_json}"
     local tcp_result=$?
     read -r tcp_end_total tcp_end_idle <<< "$(read_cpu_stat)"
 
@@ -332,7 +387,8 @@ perform_throughput_test() {
     echo
 
     read -r udp_start_total udp_start_idle <<< "$(read_cpu_stat)"
-    ip netns exec "${LEFT_NS}" iperf3 -c "${RIGHT_IP}" -u -t "${IPERF_DURATION}" -l "${IPERF_UDP_LENGTH}" -P "${IPERF_UDP_STREAMS}" -b "${IPERF_UDP_BANDWIDTH}" -J > "${udp_json}"
+    #ip netns exec "${LEFT_NS}" taskset -c ${MASK_S1} iperf3 -c "${RIGHT_IP}" -u -t "${IPERF_DURATION}" -l "${IPERF_UDP_LENGTH}" -P "${IPERF_UDP_STREAMS}" -b "${IPERF_UDP_BANDWIDTH}" -Z -J > "${udp_json}"
+    ip netns exec "${LEFT_NS}" iperf3 -c "${RIGHT_IP}" -u -t "${IPERF_DURATION}" -l "${IPERF_UDP_LENGTH}" -P "${IPERF_UDP_STREAMS}" -b "${IPERF_UDP_BANDWIDTH}" -Z -J > "${udp_json}"
     local udp_result=$?
     read -r udp_end_total udp_end_idle <<< "$(read_cpu_stat)"
 
@@ -419,17 +475,17 @@ reset_host_and_quit() {
         nmcli device set "${LEFT_IF}" managed yes 2>/dev/null || true
         nmcli device set "${RIGHT_IF}" managed yes 2>/dev/null || true
     fi
-    ip link set "${LEFT_IF}" mtu 1500
-    ip link set "${RIGHT_IF}" mtu 1500
+    ip link set "${LEFT_IF}" mtu 1500 up
+    ip link set "${RIGHT_IF}" mtu 1500 up
     exit 0
 }
 
 show_menu() {
     clear
     echo "============================================================"
-    echo "     PURE BARE-METAL (NO OVS) DAC CROSSOVER TEST"
+    echo "    PURE BARE-METAL (NO OVS) DAC CROSSOVER TEST"
     echo "============================================================"
-    echo "     ${LEFT_NS} (${LEFT_IF}) <---> ${RIGHT_NS} (${RIGHT_IF})"
+    echo "    ${LEFT_NS} (${LEFT_IF}) <---> ${RIGHT_NS} (${RIGHT_IF})"
     echo "------------------------------------------------------------"
     if is_setup; then
         echo -e "Topology state: ${GREEN}SETUP COMPLETE${NC}"
