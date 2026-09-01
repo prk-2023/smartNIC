@@ -79,7 +79,10 @@ cleanup_vdpa_port() {
     echo 0 | sudo tee "/sys/class/net/${PF}/device/sriov_numvfs" >/dev/null
     sudo devlink dev eswitch set "pci/${PF_BDF}" mode legacy 2>/dev/null || true
 
-    # 5. Clean up temporary node files
+    # 5. reset mtu back to 1500
+    sudo ip link set "${PF}" mtu 1500 2>/dev/null || true
+
+    # 6. Clean up temporary node files
     rm -f "/tmp/t2_vdpa_node_${PF}.txt"
 }
 
