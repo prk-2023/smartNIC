@@ -1,0 +1,59 @@
+// xdp-mode-ebpf/src/main.rs
+// This version does MAC Swap with out using network-types crate
+#![no_std]
+#![no_main]
+
+use aya_ebpf::{
+    bindings::{xdp_action, ethhdr},
+    macros::{map, xdp},
+    maps::PerCpuArray,
+    programs::XdpContext,
+};
+
+const MAX_QUEUES: u32 = 64;
+
+#[map]
+static PACKET_COUNT: PerCpuArray<u64> = PerCpuArray::with_max_entries(MAX_QUEUES, 0);
+
+#[xdp]
+pub fn xdp_mode(ctx: XdpContext) -> u32 {
+    let q = unsafe { (*ctx.ctx).rx_queue_index };
+    let idx = if q < MAX_QUEUES { q } else { MAX_QUEUES - 1 };
+
+    if let Some(count) = PACKET_COUNT.get_ptr_mut(idx) {
+        unsafe { *count += 1 };
+    }
+
+    // --- XDP_TX MAC Swap Logic ---
+    let data = ctx.data();
+    let data_end = ctx.data_end();
+
+    // Bound check: Ensure the packet is large enough to contain an Ethernet header
+    if data + core::mem::size_of::<ethhdr>() > data_end {
+        return xdp_action::XDP_ABORTED;
+    }
+
+    // Get a mutable pointer to the Ethernet header
+    let eth = data as *mut ethhdr;
+
+    unsafe {
+        // Swap Destination MAC (h_dest) and Source MAC (h_source)
+        let tmp_mac = (*eth).h_source;
+        (*eth).h_source = (*eth).h_dest;
+        (*eth).h_dest = tmp_mac;
+    }
+
+    // Transmit the packet back out of the same interface it arrived on
+    xdp_action::XDP_TX
+}
+
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+
+#[unsafe(link_section = "license")]
+#[unsafe(no_mangle)]
+static LICENSE: [u8; 13] = *b"Dual MIT/GPL\0";
+
