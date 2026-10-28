@@ -1,0 +1,18 @@
+[package]
+name = "ingress_filter-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+ingress_filter-common = { path = "../ingress_filter-common" }
+network-types = "0.2.0"
+
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "ingress_filter"
+path = "src/main.rs"
