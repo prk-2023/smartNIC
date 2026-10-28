@@ -1,0 +1,17 @@
+[package]
+name = "xsk-reflect-common"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+# Enabled by the user-space crate only: implements aya::Pod for the shared
+# structs so they can be read out of eBPF maps. The eBPF crate must NOT enable
+# it (aya does not build for the bpf target).
+user = ["aya"]
+
+[dependencies]
+aya = { version = "0.13.1", optional = true }
+
+[lib]
+path = "src/lib.rs"

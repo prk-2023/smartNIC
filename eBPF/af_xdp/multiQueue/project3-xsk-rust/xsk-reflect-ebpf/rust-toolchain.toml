@@ -1,0 +1,5 @@
+# aya's eBPF crates need nightly (for -Z build-std=core) and the rust-src
+# component (so `core` can be compiled for the bpf target).
+[toolchain]
+channel = "nightly"
+components = ["rust-src"]

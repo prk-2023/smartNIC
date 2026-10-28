@@ -1,0 +1,24 @@
+[package]
+name = "xsk-reflect"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-queue, multi-threaded AF_XDP UDP reflector (aya + xsk-rs)"
+
+[dependencies]
+# aya     : load the eBPF object, attach XDP, access maps (XSKMAP, QSTATS).
+aya = "0.13"
+# xsk-rs  : safe-ish wrapper over libxdp: UMEM, FILL/COMPLETION/RX/TX rings.
+#   `use_cc_build` builds the vendored libxdp with the `cc` crate instead of
+#   running its Makefile/`configure` (which needs llc and writes outside the
+#   build dir, and fails on many setups). 0.11 has no default features, so
+#   `default-features = false` is just explicit.
+xsk-rs = { version = "0.11", default-features = false, features = ["use_cc_build"] }
+# Types shared with the eBPF crate (QStat, ECHO_UDP_PORT, MAX_QUEUES).
+xsk-reflect-common = { path = "../xsk-reflect-common", features = ["user"] }
+
+anyhow = "1"                                        # error handling with context
+clap = { version = "4", features = ["derive"] }     # command-line parsing
+ctrlc = "3"                                         # Ctrl-C / SIGTERM handler
+libc = "0.2"                                        # CPU pinning, ethtool ioctl, getsockopt
+log = "0.4"                                         # aya logs through the `log` facade
+env_logger = "0.11"                                 # ... printed with RUST_LOG=debug

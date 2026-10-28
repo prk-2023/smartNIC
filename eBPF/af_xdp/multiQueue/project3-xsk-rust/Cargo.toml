@@ -1,0 +1,17 @@
+# Workspace root for Project 3 (Rust: aya + xsk-rs).
+#
+# Two crates are built together by a plain `cargo build`:
+#   * xsk-reflect-common : constants/types shared by kernel and user space
+#   * xsk-reflect        : user-space loader + AF_XDP workers (aya + xsk-rs)
+#
+# The eBPF crate (xsk-reflect-ebpf) is deliberately EXCLUDED: it must be built
+# for the `bpfel-unknown-none` target with a nightly toolchain and bpf-linker,
+# which cannot be mixed with the normal host build. Use `make ebpf` for it.
+[workspace]
+resolver = "2"
+members = ["xsk-reflect", "xsk-reflect-common"]
+exclude = ["xsk-reflect-ebpf"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"

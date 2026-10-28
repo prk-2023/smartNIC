@@ -1,0 +1,7 @@
+# Build for the little-endian eBPF target by default and compile `core`
+# ourselves (the bpf target ships no precompiled standard library).
+[build]
+target = "bpfel-unknown-none"
+
+[unstable]
+build-std = ["core"]
